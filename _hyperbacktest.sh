@@ -1,2 +1,4 @@
 # i need to test algo on 10 range of data and calc avg plan profit
-freqtrade backtesting -s BBRSI -c user_data/config.json | grep TOTAL
+STRATEGY=BBRSI
+
+freqtrade backtesting -s $STRATEGY -c user_data/config.json --timerange=20200501- #| grep TOTAL
