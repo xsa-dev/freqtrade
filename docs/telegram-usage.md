@@ -43,7 +43,7 @@ Talk to the [userinfobot](https://telegram.me/userinfobot)
 Get your "Id", you will use it for the config parameter `chat_id`.
 
 #### 2.2 Use Group id
-You can use bots in telegram groups just adding them to it. You can find the group id by adding a [RawDataBot](https://telegram.me/userinfobot) to it, group id is the `"chat":{"id":-1001332619709}` in the [RawDataBot](https://telegram.me/userinfobot) message. Dont forget about "-" (minus symbol) in start of value if it is.
+You can use bots in telegram groups just adding them to it. You can find the group id by adding a [RawDataBot](https://telegram.me/rawdatabot) to it, group id is the `"chat":{"id":-1001332619709}` in the [RawDataBot](https://telegram.me/rawdatabot) message. Dont forget about "-" (minus symbol) in start of value if it is.
 
 ## Telegram commands
 
