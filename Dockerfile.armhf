@@ -1,4 +1,4 @@
-FROM --platform=linux/arm/v7 python:3.7.7-slim-buster
+FROM --platform=linux/arm/v7 python:3.10.2-slim-buster
 
 RUN apt-get update \
   && apt-get -y install curl build-essential libssl-dev libffi-dev libatlas3-base libgfortran5 sqlite3 \
