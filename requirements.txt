@@ -60,3 +60,4 @@ websockets==11.0.2
 janus==1.0.0
 
 ast-comments==1.0.1
+starlette>=0.27.0 # not directly required, pinned by Snyk to avoid a vulnerability
