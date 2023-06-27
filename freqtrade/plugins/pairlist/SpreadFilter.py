@@ -5,8 +5,9 @@ import logging
 from typing import Any, Dict, Optional
 
 from freqtrade.constants import Config
+from freqtrade.exceptions import OperationalException
 from freqtrade.exchange.types import Ticker
-from freqtrade.plugins.pairlist.IPairList import IPairList
+from freqtrade.plugins.pairlist.IPairList import IPairList, PairlistParameter
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,12 @@ class SpreadFilter(IPairList):
 
         self._max_spread_ratio = pairlistconfig.get('max_spread_ratio', 0.005)
         self._enabled = self._max_spread_ratio != 0
+
+        if not self._exchange.get_option('tickers_have_bid_ask'):
+            raise OperationalException(
+                f"{self.name} requires exchange to have bid/ask data for tickers, "
+                "which is not available for the selected exchange / trading mode."
+            )
 
     @property
     def needstickers(self) -> bool:
@@ -37,6 +44,21 @@ class SpreadFilter(IPairList):
         """
         return (f"{self.name} - Filtering pairs with ask/bid diff above "
                 f"{self._max_spread_ratio:.2%}.")
+
+    @staticmethod
+    def description() -> str:
+        return "Filter by bid/ask difference."
+
+    @staticmethod
+    def available_parameters() -> Dict[str, PairlistParameter]:
+        return {
+            "max_spread_ratio": {
+                "type": "number",
+                "default": 0.005,
+                "description": "Max spread ratio",
+                "help": "Max spread ratio for a pair to be considered.",
+            },
+        }
 
     def _validate_pair(self, pair: str, ticker: Optional[Ticker]) -> bool:
         """
