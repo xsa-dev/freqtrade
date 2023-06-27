@@ -60,6 +60,7 @@
         "force_entry": "market",
         "stoploss": "market",
         "stoploss_on_exchange": false,
+        "stoploss_price_type": "last",
         "stoploss_on_exchange_interval": 60,
         "stoploss_on_exchange_limit_ratio": 0.99
     },
@@ -204,6 +205,7 @@
     "strategy_path": "user_data/strategies/",
     "recursive_strategy_search": false,
     "add_config_files": [],
+    "reduce_df_footprint": false,
     "dataformat_ohlcv": "json",
     "dataformat_trades": "jsongz"
 }

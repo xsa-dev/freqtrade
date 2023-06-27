@@ -1,8 +1,7 @@
 """
 Unit test file for rpc/api_server.py
 """
-
-import json
+import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -16,17 +15,20 @@ from fastapi import FastAPI, WebSocketDisconnect
 from fastapi.exceptions import HTTPException
 from fastapi.testclient import TestClient
 from requests.auth import _basic_auth_str
+from sqlalchemy import select
 
 from freqtrade.__init__ import __version__
 from freqtrade.enums import CandleType, RunMode, State, TradingMode
 from freqtrade.exceptions import DependencyException, ExchangeError, OperationalException
 from freqtrade.loggers import setup_logging, setup_logging_pre
+from freqtrade.optimize.backtesting import Backtesting
 from freqtrade.persistence import PairLocks, Trade
 from freqtrade.rpc import RPC
 from freqtrade.rpc.api_server import ApiServer
 from freqtrade.rpc.api_server.api_auth import create_token, get_user_from_token
 from freqtrade.rpc.api_server.uvicorn_threaded import UvicornServer
-from tests.conftest import (CURRENT_TEST_STRATEGY, create_mock_trades, get_mock_coro,
+from freqtrade.rpc.api_server.webserver_bgwork import ApiBG
+from tests.conftest import (CURRENT_TEST_STRATEGY, EXMS, create_mock_trades, get_mock_coro,
                             get_patched_freqtradebot, log_has, log_has_re, patch_get_signal)
 
 
@@ -57,7 +59,10 @@ def botclient(default_conf, mocker):
     try:
         apiserver = ApiServer(default_conf)
         apiserver.add_rpc_handler(rpc)
-        yield ftbot, TestClient(apiserver.app)
+        # We need to use the TestClient as a context manager to
+        # handle lifespan events correctly
+        with TestClient(apiserver.app) as client:
+            yield ftbot, client
         # Cleanup ... ?
     finally:
         if apiserver:
@@ -65,22 +70,23 @@ def botclient(default_conf, mocker):
         ApiServer.shutdown()
 
 
-def client_post(client, url, data={}):
+def client_post(client: TestClient, url, data={}):
+
     return client.post(url,
-                       data=data,
+                       json=data,
                        headers={'Authorization': _basic_auth_str(_TEST_USER, _TEST_PASS),
                                 'Origin': 'http://example.com',
                                 'content-type': 'application/json'
                                 })
 
 
-def client_get(client, url):
+def client_get(client: TestClient, url):
     # Add fake Origin to ensure CORS kicks in
     return client.get(url, headers={'Authorization': _basic_auth_str(_TEST_USER, _TEST_PASS),
                                     'Origin': 'http://example.com'})
 
 
-def client_delete(client, url):
+def client_delete(client: TestClient, url):
     # Add fake Origin to ensure CORS kicks in
     return client.delete(url, headers={'Authorization': _basic_auth_str(_TEST_USER, _TEST_PASS),
                                        'Origin': 'http://example.com'})
@@ -279,7 +285,7 @@ def test_api__init__(default_conf, mocker):
                                         "username": "TestUser",
                                         "password": "testPass",
                                         }})
-    mocker.patch('freqtrade.rpc.telegram.Updater', MagicMock())
+    mocker.patch('freqtrade.rpc.telegram.Telegram._init')
     mocker.patch('freqtrade.rpc.api_server.webserver.ApiServer.start_api', MagicMock())
     apiserver = ApiServer(default_conf)
     apiserver.add_rpc_handler(RPC(get_patched_freqtradebot(mocker, default_conf)))
@@ -294,10 +300,6 @@ def test_api__init__(default_conf, mocker):
 def test_api_UvicornServer(mocker):
     thread_mock = mocker.patch('freqtrade.rpc.api_server.uvicorn_threaded.threading.Thread')
     s = UvicornServer(uvicorn.Config(MagicMock(), port=8080, host='127.0.0.1'))
-    assert thread_mock.call_count == 0
-
-    s.install_signal_handlers()
-    # Original implementation starts a thread - make sure that's not the case
     assert thread_mock.call_count == 0
 
     # Fake started to avoid sleeping forever
@@ -315,10 +317,6 @@ def test_api_UvicornServer_run(mocker):
     s = UvicornServer(uvicorn.Config(MagicMock(), port=8080, host='127.0.0.1'))
     assert serve_mock.call_count == 0
 
-    s.install_signal_handlers()
-    # Original implementation starts a thread - make sure that's not the case
-    assert serve_mock.call_count == 0
-
     # Fake started to avoid sleeping forever
     s.started = True
     s.run()
@@ -328,11 +326,8 @@ def test_api_UvicornServer_run(mocker):
 def test_api_UvicornServer_run_no_uvloop(mocker, import_fails):
     serve_mock = mocker.patch('freqtrade.rpc.api_server.uvicorn_threaded.UvicornServer.serve',
                               get_mock_coro(None))
+    asyncio.set_event_loop(asyncio.new_event_loop())
     s = UvicornServer(uvicorn.Config(MagicMock(), port=8080, host='127.0.0.1'))
-    assert serve_mock.call_count == 0
-
-    s.install_signal_handlers()
-    # Original implementation starts a thread - make sure that's not the case
     assert serve_mock.call_count == 0
 
     # Fake started to avoid sleeping forever
@@ -348,7 +343,7 @@ def test_api_run(default_conf, mocker, caplog):
                                         "username": "TestUser",
                                         "password": "testPass",
                                         }})
-    mocker.patch('freqtrade.rpc.telegram.Updater', MagicMock())
+    mocker.patch('freqtrade.rpc.telegram.Telegram._init')
 
     server_inst_mock = MagicMock()
     server_inst_mock.run_in_thread = MagicMock()
@@ -426,7 +421,7 @@ def test_api_cleanup(default_conf, mocker, caplog):
                                         "username": "TestUser",
                                         "password": "testPass",
                                         }})
-    mocker.patch('freqtrade.rpc.telegram.Updater', MagicMock())
+    mocker.patch('freqtrade.rpc.telegram.Telegram._init')
 
     server_mock = MagicMock()
     server_mock.cleanup = MagicMock()
@@ -438,7 +433,6 @@ def test_api_cleanup(default_conf, mocker, caplog):
     apiserver.cleanup()
     assert apiserver._server.cleanup.call_count == 1
     assert log_has("Stopping API Server", caplog)
-    assert log_has("Stopping API Server background tasks", caplog)
     ApiServer.shutdown()
 
 
@@ -472,9 +466,9 @@ def test_api_balance(botclient, mocker, rpc_balance, tickers):
     ftbot, client = botclient
 
     ftbot.config['dry_run'] = False
-    mocker.patch('freqtrade.exchange.Exchange.get_balances', return_value=rpc_balance)
-    mocker.patch('freqtrade.exchange.Exchange.get_tickers', tickers)
-    mocker.patch('freqtrade.exchange.Exchange.get_valid_pair_combination',
+    mocker.patch(f'{EXMS}.get_balances', return_value=rpc_balance)
+    mocker.patch(f'{EXMS}.get_tickers', tickers)
+    mocker.patch(f'{EXMS}.get_valid_pair_combination',
                  side_effect=lambda a, b: f"{a}/{b}")
     ftbot.wallets.update()
 
@@ -488,13 +482,18 @@ def test_api_balance(botclient, mocker, rpc_balance, tickers):
         'free': 12.0,
         'balance': 12.0,
         'used': 0.0,
+        'bot_owned': pytest.approx(11.879999),
         'est_stake': 12.0,
+        'est_stake_bot': pytest.approx(11.879999),
         'stake': 'BTC',
         'is_position': False,
         'leverage': 1.0,
         'position': 0.0,
         'side': 'long',
+        'is_bot_managed': True,
     }
+    assert response['total'] == 12.159513094
+    assert response['total_bot'] == pytest.approx(11.879999)
     assert 'starting_capital' in response
     assert 'starting_capital_fiat' in response
     assert 'starting_capital_pct' in response
@@ -506,7 +505,7 @@ def test_api_count(botclient, mocker, ticker, fee, markets, is_short):
     ftbot, client = botclient
     patch_get_signal(ftbot)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         get_balances=MagicMock(return_value=ticker),
         fetch_ticker=ticker,
         get_fee=fee,
@@ -559,7 +558,7 @@ def test_api_locks(botclient):
     assert rc.json()['lock_count'] == 1
 
     rc = client_post(client, f"{BASE_URI}/locks/delete",
-                     data='{"pair": "XRP/BTC"}')
+                     data={"pair": "XRP/BTC"})
     assert_response(rc)
     assert rc.json()['lock_count'] == 0
 
@@ -586,14 +585,14 @@ def test_api_show_config(botclient):
     assert 'unfilledtimeout' in response
     assert 'version' in response
     assert 'api_version' in response
-    assert 2.1 <= response['api_version'] <= 2.2
+    assert 2.1 <= response['api_version'] < 3.0
 
 
 def test_api_daily(botclient, mocker, ticker, fee, markets):
     ftbot, client = botclient
     patch_get_signal(ftbot)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         get_balances=MagicMock(return_value=ticker),
         fetch_ticker=ticker,
         get_fee=fee,
@@ -604,7 +603,7 @@ def test_api_daily(botclient, mocker, ticker, fee, markets):
     assert len(rc.json()['data']) == 7
     assert rc.json()['stake_currency'] == 'BTC'
     assert rc.json()['fiat_display_currency'] == 'USD'
-    assert rc.json()['data'][0]['date'] == str(datetime.utcnow().date())
+    assert rc.json()['data'][0]['date'] == str(datetime.now(timezone.utc).date())
 
 
 @pytest.mark.parametrize('is_short', [True, False])
@@ -612,7 +611,7 @@ def test_api_trades(botclient, mocker, fee, markets, is_short):
     ftbot, client = botclient
     patch_get_signal(ftbot)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         markets=PropertyMock(return_value=markets)
     )
     rc = client_get(client, f"{BASE_URI}/trades")
@@ -623,7 +622,7 @@ def test_api_trades(botclient, mocker, fee, markets, is_short):
     assert rc.json()['offset'] == 0
 
     create_mock_trades(fee, is_short=is_short)
-    Trade.query.session.flush()
+    Trade.session.flush()
 
     rc = client_get(client, f"{BASE_URI}/trades")
     assert_response(rc)
@@ -643,7 +642,7 @@ def test_api_trade_single(botclient, mocker, fee, ticker, markets, is_short):
     ftbot, client = botclient
     patch_get_signal(ftbot, enter_long=not is_short, enter_short=is_short)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         markets=PropertyMock(return_value=markets),
         fetch_ticker=ticker,
     )
@@ -651,7 +650,7 @@ def test_api_trade_single(botclient, mocker, fee, ticker, markets, is_short):
     assert_response(rc, 404)
     assert rc.json()['detail'] == 'Trade not found.'
 
-    Trade.query.session.rollback()
+    Trade.rollback()
     create_mock_trades(fee, is_short=is_short)
 
     rc = client_get(client, f"{BASE_URI}/trade/3")
@@ -667,7 +666,7 @@ def test_api_delete_trade(botclient, mocker, fee, markets, is_short):
     stoploss_mock = MagicMock()
     cancel_mock = MagicMock()
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         markets=PropertyMock(return_value=markets),
         cancel_order=cancel_mock,
         cancel_stoploss_order=stoploss_mock,
@@ -676,7 +675,7 @@ def test_api_delete_trade(botclient, mocker, fee, markets, is_short):
     create_mock_trades(fee, is_short=is_short)
 
     ftbot.strategy.order_types['stoploss_on_exchange'] = True
-    trades = Trade.query.all()
+    trades = Trade.session.scalars(select(Trade)).all()
     trades[1].stoploss_order_id = '1234'
     Trade.commit()
     assert len(trades) > 2
@@ -684,7 +683,7 @@ def test_api_delete_trade(botclient, mocker, fee, markets, is_short):
     rc = client_delete(client, f"{BASE_URI}/trades/1")
     assert_response(rc)
     assert rc.json()['result_msg'] == 'Deleted trade 1. Closed 1 open orders.'
-    assert len(trades) - 1 == len(Trade.query.all())
+    assert len(trades) - 1 == len(Trade.session.scalars(select(Trade)).all())
     assert cancel_mock.call_count == 1
 
     cancel_mock.reset_mock()
@@ -693,16 +692,81 @@ def test_api_delete_trade(botclient, mocker, fee, markets, is_short):
     assert_response(rc, 502)
     assert cancel_mock.call_count == 0
 
-    assert len(trades) - 1 == len(Trade.query.all())
+    assert len(trades) - 1 == len(Trade.session.scalars(select(Trade)).all())
     rc = client_delete(client, f"{BASE_URI}/trades/2")
     assert_response(rc)
     assert rc.json()['result_msg'] == 'Deleted trade 2. Closed 2 open orders.'
-    assert len(trades) - 2 == len(Trade.query.all())
+    assert len(trades) - 2 == len(Trade.session.scalars(select(Trade)).all())
     assert stoploss_mock.call_count == 1
 
     rc = client_delete(client, f"{BASE_URI}/trades/502")
     # Error - trade won't exist.
     assert_response(rc, 502)
+
+
+@pytest.mark.parametrize('is_short', [True, False])
+def test_api_delete_open_order(botclient, mocker, fee, markets, ticker, is_short):
+    ftbot, client = botclient
+    patch_get_signal(ftbot, enter_long=not is_short, enter_short=is_short)
+    stoploss_mock = MagicMock()
+    cancel_mock = MagicMock()
+    mocker.patch.multiple(
+        EXMS,
+        markets=PropertyMock(return_value=markets),
+        fetch_ticker=ticker,
+        cancel_order=cancel_mock,
+        cancel_stoploss_order=stoploss_mock,
+    )
+
+    rc = client_delete(client, f"{BASE_URI}/trades/10/open-order")
+    assert_response(rc, 502)
+    assert 'Invalid trade_id.' in rc.json()['error']
+
+    create_mock_trades(fee, is_short=is_short)
+    Trade.commit()
+
+    rc = client_delete(client, f"{BASE_URI}/trades/5/open-order")
+    assert_response(rc, 502)
+    assert 'No open order for trade_id' in rc.json()['error']
+    trade = Trade.get_trades([Trade.id == 6]).first()
+    mocker.patch(f'{EXMS}.fetch_order', side_effect=ExchangeError)
+    rc = client_delete(client, f"{BASE_URI}/trades/6/open-order")
+    assert_response(rc, 502)
+    assert 'Order not found.' in rc.json()['error']
+
+    trade = Trade.get_trades([Trade.id == 6]).first()
+    mocker.patch(f'{EXMS}.fetch_order', return_value=trade.orders[-1].to_ccxt_object())
+
+    rc = client_delete(client, f"{BASE_URI}/trades/6/open-order")
+    assert_response(rc)
+    assert cancel_mock.call_count == 1
+
+
+@pytest.mark.parametrize('is_short', [True, False])
+def test_api_trade_reload_trade(botclient, mocker, fee, markets, ticker, is_short):
+    ftbot, client = botclient
+    patch_get_signal(ftbot, enter_long=not is_short, enter_short=is_short)
+    stoploss_mock = MagicMock()
+    cancel_mock = MagicMock()
+    ftbot.handle_onexchange_order = MagicMock()
+    mocker.patch.multiple(
+        EXMS,
+        markets=PropertyMock(return_value=markets),
+        fetch_ticker=ticker,
+        cancel_order=cancel_mock,
+        cancel_stoploss_order=stoploss_mock,
+    )
+
+    rc = client_post(client, f"{BASE_URI}/trades/10/reload")
+    assert_response(rc, 502)
+    assert 'Could not find trade with id 10.' in rc.json()['error']
+    assert ftbot.handle_onexchange_order.call_count == 0
+
+    create_mock_trades(fee, is_short=is_short)
+    Trade.commit()
+
+    rc = client_post(client, f"{BASE_URI}/trades/5/reload")
+    assert ftbot.handle_onexchange_order.call_count == 1
 
 
 def test_api_logs(botclient):
@@ -741,7 +805,7 @@ def test_api_edge_disabled(botclient, mocker, ticker, fee, markets):
     ftbot, client = botclient
     patch_get_signal(ftbot)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         get_balances=MagicMock(return_value=ticker),
         fetch_ticker=ticker,
         get_fee=fee,
@@ -803,7 +867,7 @@ def test_api_profit(botclient, mocker, ticker, fee, markets, is_short, expected)
     ftbot, client = botclient
     patch_get_signal(ftbot)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         get_balances=MagicMock(return_value=ticker),
         fetch_ticker=ticker,
         get_fee=fee,
@@ -826,8 +890,10 @@ def test_api_profit(botclient, mocker, ticker, fee, markets, is_short, expected)
         'best_pair_profit_ratio': expected['best_pair_profit_ratio'],
         'best_rate': expected['best_rate'],
         'first_trade_date': ANY,
+        'first_trade_humanized': ANY,
         'first_trade_timestamp': ANY,
-        'latest_trade_date': '5 minutes ago',
+        'latest_trade_date': ANY,
+        'latest_trade_humanized': '5 minutes ago',
         'latest_trade_timestamp': ANY,
         'profit_all_coin': pytest.approx(expected['profit_all_coin']),
         'profit_all_fiat': pytest.approx(expected['profit_all_fiat']),
@@ -853,6 +919,8 @@ def test_api_profit(botclient, mocker, ticker, fee, markets, is_short, expected)
         'max_drawdown': ANY,
         'max_drawdown_abs': ANY,
         'trading_volume': expected['trading_volume'],
+        'bot_start_timestamp': 0,
+        'bot_start_date': '',
     }
 
 
@@ -861,7 +929,7 @@ def test_api_stats(botclient, mocker, ticker, fee, markets, is_short):
     ftbot, client = botclient
     patch_get_signal(ftbot, enter_long=not is_short, enter_short=is_short)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         get_balances=MagicMock(return_value=ticker),
         fetch_ticker=ticker,
         get_fee=fee,
@@ -904,7 +972,7 @@ def test_api_performance(botclient, fee):
     )
     trade.close_profit = trade.calc_profit_ratio(trade.close_rate)
     trade.close_profit_abs = trade.calc_profit(trade.close_rate)
-    Trade.query.session.add(trade)
+    Trade.session.add(trade)
 
     trade = Trade(
         pair='XRP/ETH',
@@ -921,7 +989,7 @@ def test_api_performance(botclient, fee):
     trade.close_profit = trade.calc_profit_ratio(trade.close_rate)
     trade.close_profit_abs = trade.calc_profit(trade.close_rate)
 
-    Trade.query.session.add(trade)
+    Trade.session.add(trade)
     Trade.commit()
 
     rc = client_get(client, f"{BASE_URI}/performance")
@@ -942,7 +1010,7 @@ def test_api_status(botclient, mocker, ticker, fee, markets, is_short,
     ftbot, client = botclient
     patch_get_signal(ftbot)
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         get_balances=MagicMock(return_value=ticker),
         fetch_ticker=ticker,
         get_fee=fee,
@@ -967,13 +1035,15 @@ def test_api_status(botclient, mocker, ticker, fee, markets, is_short,
         'close_profit_pct': None,
         'close_profit_abs': None,
         'close_rate': None,
-        'current_profit': ANY,
-        'current_profit_pct': ANY,
-        'current_profit_abs': ANY,
         'profit_ratio': ANY,
         'profit_pct': ANY,
         'profit_abs': ANY,
         'profit_fiat': ANY,
+        'total_profit_abs': ANY,
+        'total_profit_fiat': ANY,
+        'total_profit_ratio': ANY,
+        'realized_profit': 0.0,
+        'realized_profit_ratio': None,
         'current_rate': current_rate,
         'open_date': ANY,
         'open_timestamp': ANY,
@@ -983,6 +1053,7 @@ def test_api_status(botclient, mocker, ticker, fee, markets, is_short,
         'base_currency': 'ETH',
         'quote_currency': 'BTC',
         'stake_amount': 0.001,
+        'max_stake_amount': ANY,
         'stop_loss_abs': ANY,
         'stop_loss_pct': ANY,
         'stop_loss_ratio': ANY,
@@ -1012,11 +1083,9 @@ def test_api_status(botclient, mocker, ticker, fee, markets, is_short,
         'open_order_id': open_order_id,
         'open_rate_requested': ANY,
         'open_trade_value': open_trade_value,
-        'sell_reason': None,
         'exit_reason': None,
         'exit_order_status': None,
         'strategy': CURRENT_TEST_STRATEGY,
-        'buy_tag': None,
         'enter_tag': None,
         'timeframe': 5,
         'exchange': 'binance',
@@ -1025,10 +1094,13 @@ def test_api_status(botclient, mocker, ticker, fee, markets, is_short,
         'liquidation_price': None,
         'funding_fees': None,
         'trading_mode': ANY,
+        'amount_precision': None,
+        'price_precision': None,
+        'precision_mode': None,
         'orders': [ANY],
     }
 
-    mocker.patch('freqtrade.exchange.Exchange.get_rate',
+    mocker.patch(f'{EXMS}.get_rate',
                  MagicMock(side_effect=ExchangeError("Pair 'ETH/BTC' not available")))
 
     rc = client_get(client, f"{BASE_URI}/status")
@@ -1061,7 +1133,7 @@ def test_api_blacklist(botclient, mocker):
 
     # Add ETH/BTC to blacklist
     rc = client_post(client, f"{BASE_URI}/blacklist",
-                     data='{"blacklist": ["ETH/BTC"]}')
+                     data={"blacklist": ["ETH/BTC"]})
     assert_response(rc)
     assert rc.json() == {"blacklist": ["DOGE/BTC", "HOT/BTC", "ETH/BTC"],
                          "blacklist_expanded": ["ETH/BTC"],
@@ -1071,7 +1143,7 @@ def test_api_blacklist(botclient, mocker):
                          }
 
     rc = client_post(client, f"{BASE_URI}/blacklist",
-                     data='{"blacklist": ["XRP/.*"]}')
+                     data={"blacklist": ["XRP/.*"]})
     assert_response(rc)
     assert rc.json() == {"blacklist": ["DOGE/BTC", "HOT/BTC", "ETH/BTC", "XRP/.*"],
                          "blacklist_expanded": ["ETH/BTC", "XRP/BTC", "XRP/USDT"],
@@ -1133,7 +1205,7 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
     ftbot, client = botclient
 
     rc = client_post(client, f"{BASE_URI}/{endpoint}",
-                     data='{"pair": "ETH/BTC"}')
+                     data={"pair": "ETH/BTC"})
     assert_response(rc, 502)
     assert rc.json() == {"error": f"Error querying /api/v1/{endpoint}: Force_entry not enabled."}
 
@@ -1141,9 +1213,9 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
     ftbot.config['force_entry_enable'] = True
 
     fbuy_mock = MagicMock(return_value=None)
-    mocker.patch("freqtrade.rpc.RPC._rpc_force_entry", fbuy_mock)
+    mocker.patch("freqtrade.rpc.rpc.RPC._rpc_force_entry", fbuy_mock)
     rc = client_post(client, f"{BASE_URI}/{endpoint}",
-                     data='{"pair": "ETH/BTC"}')
+                     data={"pair": "ETH/BTC"})
     assert_response(rc)
     assert rc.json() == {"status": "Error entering long trade for pair ETH/BTC."}
 
@@ -1156,7 +1228,7 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
         stake_amount=1,
         open_rate=0.245441,
         open_order_id="123456",
-        open_date=datetime.utcnow(),
+        open_date=datetime.now(timezone.utc),
         is_open=False,
         is_short=False,
         fee_close=fee.return_value,
@@ -1167,10 +1239,10 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
         strategy=CURRENT_TEST_STRATEGY,
         trading_mode=TradingMode.SPOT
     ))
-    mocker.patch("freqtrade.rpc.RPC._rpc_force_entry", fbuy_mock)
+    mocker.patch("freqtrade.rpc.rpc.RPC._rpc_force_entry", fbuy_mock)
 
     rc = client_post(client, f"{BASE_URI}/{endpoint}",
-                     data='{"pair": "ETH/BTC"}')
+                     data={"pair": "ETH/BTC"})
     assert_response(rc)
     assert rc.json() == {
         'amount': 1.0,
@@ -1186,6 +1258,7 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
         'base_currency': 'ETH',
         'quote_currency': 'BTC',
         'stake_amount': 1,
+        'max_stake_amount': ANY,
         'stop_loss_abs': None,
         'stop_loss_pct': None,
         'stop_loss_ratio': None,
@@ -1203,6 +1276,8 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
         'profit_pct': None,
         'profit_abs': None,
         'profit_fiat': None,
+        'realized_profit': 0.0,
+        'realized_profit_ratio': None,
         'fee_close': 0.0025,
         'fee_close_cost': None,
         'fee_close_currency': None,
@@ -1216,11 +1291,9 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
         'open_order_id': '123456',
         'open_rate_requested': None,
         'open_trade_value': 0.24605460,
-        'sell_reason': None,
         'exit_reason': None,
         'exit_order_status': None,
         'strategy': CURRENT_TEST_STRATEGY,
-        'buy_tag': None,
         'enter_tag': None,
         'timeframe': 5,
         'exchange': 'binance',
@@ -1229,6 +1302,9 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
         'liquidation_price': None,
         'funding_fees': None,
         'trading_mode': 'spot',
+        'amount_precision': None,
+        'price_precision': None,
+        'precision_mode': None,
         'orders': [],
     }
 
@@ -1236,39 +1312,39 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
 def test_api_forceexit(botclient, mocker, ticker, fee, markets):
     ftbot, client = botclient
     mocker.patch.multiple(
-        'freqtrade.exchange.Exchange',
+        EXMS,
         get_balances=MagicMock(return_value=ticker),
         fetch_ticker=ticker,
         get_fee=fee,
         markets=PropertyMock(return_value=markets),
-        _is_dry_limit_order_filled=MagicMock(return_value=True),
+        _dry_is_price_crossed=MagicMock(return_value=True),
     )
     patch_get_signal(ftbot)
 
     rc = client_post(client, f"{BASE_URI}/forceexit",
-                     data='{"tradeid": "1"}')
+                     data={"tradeid": "1"})
     assert_response(rc, 502)
     assert rc.json() == {"error": "Error querying /api/v1/forceexit: invalid argument"}
-    Trade.query.session.rollback()
+    Trade.rollback()
 
     create_mock_trades(fee)
     trade = Trade.get_trades([Trade.id == 5]).first()
     assert pytest.approx(trade.amount) == 123
     rc = client_post(client, f"{BASE_URI}/forceexit",
-                     data='{"tradeid": "5", "ordertype": "market", "amount": 23}')
+                     data={"tradeid": "5", "ordertype": "market", "amount": 23})
     assert_response(rc)
-    assert rc.json() == {'result': 'Created sell order for trade 5.'}
-    Trade.query.session.rollback()
+    assert rc.json() == {'result': 'Created exit order for trade 5.'}
+    Trade.rollback()
 
     trade = Trade.get_trades([Trade.id == 5]).first()
     assert pytest.approx(trade.amount) == 100
     assert trade.is_open is True
 
     rc = client_post(client, f"{BASE_URI}/forceexit",
-                     data='{"tradeid": "5"}')
+                     data={"tradeid": "5"})
     assert_response(rc)
-    assert rc.json() == {'result': 'Created sell order for trade 5.'}
-    Trade.query.session.rollback()
+    assert rc.json() == {'result': 'Created exit order for trade 5.'}
+    Trade.rollback()
 
     trade = Trade.get_trades([Trade.id == 5]).first()
     assert trade.is_open is False
@@ -1365,10 +1441,10 @@ def test_api_pair_candles(botclient, ohlcv_history):
              ])
 
 
-def test_api_pair_history(botclient, ohlcv_history):
+def test_api_pair_history(botclient, mocker):
     ftbot, client = botclient
     timeframe = '5m'
-
+    lfm = mocker.patch('freqtrade.strategy.interface.IStrategy.load_freqAI_model')
     # No pair
     rc = client_get(client,
                     f"{BASE_URI}/pair_history?timeframe={timeframe}"
@@ -1402,6 +1478,7 @@ def test_api_pair_history(botclient, ohlcv_history):
     assert len(rc.json()['data']) == rc.json()['length']
     assert 'columns' in rc.json()
     assert 'data' in rc.json()
+    assert lfm.call_count == 1
     assert rc.json()['pair'] == 'UNITTEST/BTC'
     assert rc.json()['strategy'] == CURRENT_TEST_STRATEGY
     assert rc.json()['data_start'] == '2018-01-11 00:00:00+00:00'
@@ -1418,7 +1495,7 @@ def test_api_pair_history(botclient, ohlcv_history):
                                   "No data for UNITTEST/BTC, 5m in 20200111-20200112 found.")
 
 
-def test_api_plot_config(botclient):
+def test_api_plot_config(botclient, mocker):
     ftbot, client = botclient
 
     rc = client_get(client, f"{BASE_URI}/plot_config")
@@ -1442,6 +1519,21 @@ def test_api_plot_config(botclient):
     assert isinstance(rc.json()['main_plot'], dict)
     assert isinstance(rc.json()['subplots'], dict)
 
+    rc = client_get(client, f"{BASE_URI}/plot_config?strategy=freqai_test_classifier")
+    assert_response(rc)
+    res = rc.json()
+    assert 'target_roi' in res['subplots']
+    assert 'do_predict' in res['subplots']
+
+    rc = client_get(client, f"{BASE_URI}/plot_config?strategy=HyperoptableStrategy")
+    assert_response(rc)
+    assert rc.json()['subplots'] == {}
+
+    mocker.patch('freqtrade.rpc.api_server.api_v1.get_rpc_optional', return_value=None)
+
+    rc = client_get(client, f"{BASE_URI}/plot_config")
+    assert_response(rc)
+
 
 def test_api_strategies(botclient, tmpdir):
     ftbot, client = botclient
@@ -1459,7 +1551,9 @@ def test_api_strategies(botclient, tmpdir):
         'StrategyTestV3',
         'StrategyTestV3CustomEntryPrice',
         'StrategyTestV3Futures',
+        'freqai_rl_test_strat',
         'freqai_test_classifier',
+        'freqai_test_multimodel_classifier_strat',
         'freqai_test_multimodel_strat',
         'freqai_test_strat'
     ]}
@@ -1482,6 +1576,201 @@ def test_api_strategy(botclient):
     # Disallow base64 strategies
     rc = client_get(client, f"{BASE_URI}/strategy/xx:cHJpbnQoImhlbGxvIHdvcmxkIik=")
     assert_response(rc, 500)
+
+
+def test_api_exchanges(botclient):
+    ftbot, client = botclient
+
+    rc = client_get(client, f"{BASE_URI}/exchanges")
+    assert_response(rc)
+    response = rc.json()
+    assert isinstance(response['exchanges'], list)
+    assert len(response['exchanges']) > 20
+    okx = [x for x in response['exchanges'] if x['name'] == 'okx'][0]
+    assert okx == {
+        "name": "okx",
+        "valid": True,
+        "supported": True,
+        "comment": "",
+        "trade_modes": [
+            {
+                "trading_mode": "spot",
+                "margin_mode": ""
+            },
+            {
+                "trading_mode": "futures",
+                "margin_mode": "isolated"
+            }
+        ]
+    }
+
+    mexc = [x for x in response['exchanges'] if x['name'] == 'mexc'][0]
+    assert mexc == {
+        "name": "mexc",
+        "valid": True,
+        "supported": False,
+        "comment": "",
+        "trade_modes": [
+                {
+                    "trading_mode": "spot",
+                    "margin_mode": ""
+                }
+            ]
+    }
+
+
+def test_api_freqaimodels(botclient, tmpdir, mocker):
+    ftbot, client = botclient
+    ftbot.config['user_data_dir'] = Path(tmpdir)
+    mocker.patch(
+        "freqtrade.resolvers.freqaimodel_resolver.FreqaiModelResolver.search_all_objects",
+        return_value=[
+            {'name': 'LightGBMClassifier'},
+            {'name': 'LightGBMClassifierMultiTarget'},
+            {'name': 'LightGBMRegressor'},
+            {'name': 'LightGBMRegressorMultiTarget'},
+            {'name': 'ReinforcementLearner'},
+            {'name': 'ReinforcementLearner_multiproc'},
+            {'name': 'XGBoostClassifier'},
+            {'name': 'XGBoostRFClassifier'},
+            {'name': 'XGBoostRFRegressor'},
+            {'name': 'XGBoostRegressor'},
+            {'name': 'XGBoostRegressorMultiTarget'},
+        ])
+
+    rc = client_get(client, f"{BASE_URI}/freqaimodels")
+
+    assert_response(rc)
+
+    assert rc.json() == {'freqaimodels': [
+        'LightGBMClassifier',
+        'LightGBMClassifierMultiTarget',
+        'LightGBMRegressor',
+        'LightGBMRegressorMultiTarget',
+        'ReinforcementLearner',
+        'ReinforcementLearner_multiproc',
+        'XGBoostClassifier',
+        'XGBoostRFClassifier',
+        'XGBoostRFRegressor',
+        'XGBoostRegressor',
+        'XGBoostRegressorMultiTarget'
+    ]}
+
+
+def test_api_pairlists_available(botclient, tmpdir):
+    ftbot, client = botclient
+    ftbot.config['user_data_dir'] = Path(tmpdir)
+
+    rc = client_get(client, f"{BASE_URI}/pairlists/available")
+
+    assert_response(rc, 503)
+    assert rc.json()['detail'] == 'Bot is not in the correct state.'
+
+    ftbot.config['runmode'] = RunMode.WEBSERVER
+
+    rc = client_get(client, f"{BASE_URI}/pairlists/available")
+    assert_response(rc)
+    response = rc.json()
+    assert isinstance(response['pairlists'], list)
+    assert len(response['pairlists']) > 0
+
+    assert len([r for r in response['pairlists'] if r['name'] == 'AgeFilter']) == 1
+    assert len([r for r in response['pairlists'] if r['name'] == 'VolumePairList']) == 1
+    assert len([r for r in response['pairlists'] if r['name'] == 'StaticPairList']) == 1
+
+    volumepl = [r for r in response['pairlists'] if r['name'] == 'VolumePairList'][0]
+    assert volumepl['is_pairlist_generator'] is True
+    assert len(volumepl['params']) > 1
+    age_pl = [r for r in response['pairlists'] if r['name'] == 'AgeFilter'][0]
+    assert age_pl['is_pairlist_generator'] is False
+    assert len(volumepl['params']) > 2
+
+
+def test_api_pairlists_evaluate(botclient, tmpdir, mocker):
+    ftbot, client = botclient
+    ftbot.config['user_data_dir'] = Path(tmpdir)
+
+    rc = client_get(client, f"{BASE_URI}/pairlists/evaluate/randomJob")
+
+    assert_response(rc, 503)
+    assert rc.json()['detail'] == 'Bot is not in the correct state.'
+
+    ftbot.config['runmode'] = RunMode.WEBSERVER
+
+    rc = client_get(client, f"{BASE_URI}/pairlists/evaluate/randomJob")
+    assert_response(rc, 404)
+    assert rc.json()['detail'] == 'Job not found.'
+
+    body = {
+        "pairlists": [
+            {"method": "StaticPairList", },
+        ],
+        "blacklist": [
+        ],
+        "stake_currency": "BTC"
+    }
+    # Fail, already running
+    ApiBG.pairlist_running = True
+    rc = client_post(client, f"{BASE_URI}/pairlists/evaluate", body)
+    assert_response(rc, 400)
+    assert rc.json()['detail'] == 'Pairlist evaluation is already running.'
+
+    # should start the run
+    ApiBG.pairlist_running = False
+    rc = client_post(client, f"{BASE_URI}/pairlists/evaluate", body)
+    assert_response(rc)
+    assert rc.json()['status'] == 'Pairlist evaluation started in background.'
+    job_id = rc.json()['job_id']
+
+    rc = client_get(client, f"{BASE_URI}/background/RandomJob")
+    assert_response(rc, 404)
+    assert rc.json()['detail'] == 'Job not found.'
+
+    rc = client_get(client, f"{BASE_URI}/background/{job_id}")
+    assert_response(rc)
+    response = rc.json()
+    assert response['job_id'] == job_id
+    assert response['job_category'] == 'pairlist'
+
+    rc = client_get(client, f"{BASE_URI}/pairlists/evaluate/{job_id}")
+    assert_response(rc)
+    response = rc.json()
+    assert response['result']['whitelist'] == ['ETH/BTC', 'LTC/BTC', 'XRP/BTC', 'NEO/BTC',]
+    assert response['result']['length'] == 4
+
+    # Restart with additional filter, reducing the list to 2
+    body['pairlists'].append({"method": "OffsetFilter", "number_assets": 2})
+    rc = client_post(client, f"{BASE_URI}/pairlists/evaluate", body)
+    assert_response(rc)
+    assert rc.json()['status'] == 'Pairlist evaluation started in background.'
+    job_id = rc.json()['job_id']
+
+    rc = client_get(client, f"{BASE_URI}/pairlists/evaluate/{job_id}")
+    assert_response(rc)
+    response = rc.json()
+    assert response['result']['whitelist'] == ['ETH/BTC', 'LTC/BTC', ]
+    assert response['result']['length'] == 2
+    # Patch __run_pairlists
+    plm = mocker.patch('freqtrade.rpc.api_server.api_background_tasks.__run_pairlist',
+                       return_value=None)
+    body = {
+        "pairlists": [
+            {"method": "StaticPairList", },
+        ],
+        "blacklist": [
+        ],
+        "stake_currency": "BTC",
+        "exchange": "randomExchange",
+        "trading_mode": "futures",
+        "margin_mode": "isolated",
+    }
+    rc = client_post(client, f"{BASE_URI}/pairlists/evaluate", body)
+    assert_response(rc)
+    assert plm.call_count == 1
+    call_config = plm.call_args_list[0][0][1]
+    assert call_config['exchange']['name'] == 'randomExchange'
+    assert call_config['trading_mode'] == 'futures'
+    assert call_config['margin_mode'] == 'isolated'
 
 
 def test_list_available_pairs(botclient):
@@ -1514,13 +1803,13 @@ def test_list_available_pairs(botclient):
         client, f"{BASE_URI}/available_pairs?timeframe=1h")
     assert_response(rc)
     assert rc.json()['length'] == 1
-    assert rc.json()['pairs'] == ['XRP/USDT']
+    assert rc.json()['pairs'] == ['XRP/USDT:USDT']
 
     rc = client_get(
         client, f"{BASE_URI}/available_pairs?timeframe=1h&candletype=mark")
     assert_response(rc)
     assert rc.json()['length'] == 2
-    assert rc.json()['pairs'] == ['UNITTEST/USDT', 'XRP/USDT']
+    assert rc.json()['pairs'] == ['UNITTEST/USDT:USDT', 'XRP/USDT:USDT']
     assert len(rc.json()['pair_interval']) == 2
 
 
@@ -1535,131 +1824,141 @@ def test_sysinfo(botclient):
 
 
 def test_api_backtesting(botclient, mocker, fee, caplog, tmpdir):
-    ftbot, client = botclient
-    mocker.patch('freqtrade.exchange.Exchange.get_fee', fee)
+    try:
+        ftbot, client = botclient
+        mocker.patch(f'{EXMS}.get_fee', fee)
 
-    rc = client_get(client, f"{BASE_URI}/backtest")
-    # Backtest prevented in default mode
-    assert_response(rc, 502)
+        rc = client_get(client, f"{BASE_URI}/backtest")
+        # Backtest prevented in default mode
+        assert_response(rc, 503)
+        assert rc.json()['detail'] == 'Bot is not in the correct state.'
 
-    ftbot.config['runmode'] = RunMode.WEBSERVER
-    # Backtesting not started yet
-    rc = client_get(client, f"{BASE_URI}/backtest")
-    assert_response(rc)
+        ftbot.config['runmode'] = RunMode.WEBSERVER
+        # Backtesting not started yet
+        rc = client_get(client, f"{BASE_URI}/backtest")
+        assert_response(rc)
 
-    result = rc.json()
-    assert result['status'] == 'not_started'
-    assert not result['running']
-    assert result['status_msg'] == 'Backtest not yet executed'
-    assert result['progress'] == 0
+        result = rc.json()
+        assert result['status'] == 'not_started'
+        assert not result['running']
+        assert result['status_msg'] == 'Backtest not yet executed'
+        assert result['progress'] == 0
 
-    # Reset backtesting
-    rc = client_delete(client, f"{BASE_URI}/backtest")
-    assert_response(rc)
-    result = rc.json()
-    assert result['status'] == 'reset'
-    assert not result['running']
-    assert result['status_msg'] == 'Backtest reset'
-    ftbot.config['export'] = 'trades'
-    ftbot.config['backtest_cache'] = 'day'
-    ftbot.config['user_data_dir'] = Path(tmpdir)
-    ftbot.config['exportfilename'] = Path(tmpdir) / "backtest_results"
-    ftbot.config['exportfilename'].mkdir()
+        # Reset backtesting
+        rc = client_delete(client, f"{BASE_URI}/backtest")
+        assert_response(rc)
+        result = rc.json()
+        assert result['status'] == 'reset'
+        assert not result['running']
+        assert result['status_msg'] == 'Backtest reset'
+        ftbot.config['export'] = 'trades'
+        ftbot.config['backtest_cache'] = 'day'
+        ftbot.config['user_data_dir'] = Path(tmpdir)
+        ftbot.config['exportfilename'] = Path(tmpdir) / "backtest_results"
+        ftbot.config['exportfilename'].mkdir()
 
-    # start backtesting
-    data = {
-        "strategy": CURRENT_TEST_STRATEGY,
-        "timeframe": "5m",
-        "timerange": "20180110-20180111",
-        "max_open_trades": 3,
-        "stake_amount": 100,
-        "dry_run_wallet": 1000,
-        "enable_protections": False
-    }
-    rc = client_post(client, f"{BASE_URI}/backtest", data=json.dumps(data))
-    assert_response(rc)
-    result = rc.json()
+        # start backtesting
+        data = {
+            "strategy": CURRENT_TEST_STRATEGY,
+            "timeframe": "5m",
+            "timerange": "20180110-20180111",
+            "max_open_trades": 3,
+            "stake_amount": 100,
+            "dry_run_wallet": 1000,
+            "enable_protections": False
+        }
+        rc = client_post(client, f"{BASE_URI}/backtest", data=data)
+        assert_response(rc)
+        result = rc.json()
 
-    assert result['status'] == 'running'
-    assert result['progress'] == 0
-    assert result['running']
-    assert result['status_msg'] == 'Backtest started'
+        assert result['status'] == 'running'
+        assert result['progress'] == 0
+        assert result['running']
+        assert result['status_msg'] == 'Backtest started'
 
-    rc = client_get(client, f"{BASE_URI}/backtest")
-    assert_response(rc)
+        rc = client_get(client, f"{BASE_URI}/backtest")
+        assert_response(rc)
 
-    result = rc.json()
-    assert result['status'] == 'ended'
-    assert not result['running']
-    assert result['status_msg'] == 'Backtest ended'
-    assert result['progress'] == 1
-    assert result['backtest_result']
+        result = rc.json()
+        assert result['status'] == 'ended'
+        assert not result['running']
+        assert result['status_msg'] == 'Backtest ended'
+        assert result['progress'] == 1
+        assert result['backtest_result']
 
-    rc = client_get(client, f"{BASE_URI}/backtest/abort")
-    assert_response(rc)
-    result = rc.json()
-    assert result['status'] == 'not_running'
-    assert not result['running']
-    assert result['status_msg'] == 'Backtest ended'
+        rc = client_get(client, f"{BASE_URI}/backtest/abort")
+        assert_response(rc)
+        result = rc.json()
+        assert result['status'] == 'not_running'
+        assert not result['running']
+        assert result['status_msg'] == 'Backtest ended'
 
-    # Simulate running backtest
-    ApiServer._bgtask_running = True
-    rc = client_get(client, f"{BASE_URI}/backtest/abort")
-    assert_response(rc)
-    result = rc.json()
-    assert result['status'] == 'stopping'
-    assert not result['running']
-    assert result['status_msg'] == 'Backtest ended'
+        # Simulate running backtest
+        ApiBG.bgtask_running = True
+        rc = client_get(client, f"{BASE_URI}/backtest/abort")
+        assert_response(rc)
+        result = rc.json()
+        assert result['status'] == 'stopping'
+        assert not result['running']
+        assert result['status_msg'] == 'Backtest ended'
 
-    # Get running backtest...
-    rc = client_get(client, f"{BASE_URI}/backtest")
-    assert_response(rc)
-    result = rc.json()
-    assert result['status'] == 'running'
-    assert result['running']
-    assert result['step'] == "backtest"
-    assert result['status_msg'] == "Backtest running"
+        # Get running backtest...
+        rc = client_get(client, f"{BASE_URI}/backtest")
+        assert_response(rc)
+        result = rc.json()
+        assert result['status'] == 'running'
+        assert result['running']
+        assert result['step'] == "backtest"
+        assert result['status_msg'] == "Backtest running"
 
-    # Try delete with task still running
-    rc = client_delete(client, f"{BASE_URI}/backtest")
-    assert_response(rc)
-    result = rc.json()
-    assert result['status'] == 'running'
+        # Try delete with task still running
+        rc = client_delete(client, f"{BASE_URI}/backtest")
+        assert_response(rc)
+        result = rc.json()
+        assert result['status'] == 'running'
 
-    # Post to backtest that's still running
-    rc = client_post(client, f"{BASE_URI}/backtest", data=json.dumps(data))
-    assert_response(rc, 502)
-    result = rc.json()
-    assert 'Bot Background task already running' in result['error']
+        # Post to backtest that's still running
+        rc = client_post(client, f"{BASE_URI}/backtest", data=data)
+        assert_response(rc, 502)
+        result = rc.json()
+        assert 'Bot Background task already running' in result['error']
 
-    ApiServer._bgtask_running = False
+        ApiBG.bgtask_running = False
 
-    # Rerun backtest (should get previous result)
-    rc = client_post(client, f"{BASE_URI}/backtest", data=json.dumps(data))
-    assert_response(rc)
-    result = rc.json()
-    assert log_has_re('Reusing result of previous backtest.*', caplog)
+        # Rerun backtest (should get previous result)
+        rc = client_post(client, f"{BASE_URI}/backtest", data=data)
+        assert_response(rc)
+        result = rc.json()
+        assert log_has_re('Reusing result of previous backtest.*', caplog)
 
-    data['stake_amount'] = 101
+        data['stake_amount'] = 101
 
-    mocker.patch('freqtrade.optimize.backtesting.Backtesting.backtest_one_strategy',
-                 side_effect=DependencyException())
-    rc = client_post(client, f"{BASE_URI}/backtest", data=json.dumps(data))
-    assert log_has("Backtesting caused an error: ", caplog)
+        mocker.patch('freqtrade.optimize.backtesting.Backtesting.backtest_one_strategy',
+                     side_effect=DependencyException('DeadBeef'))
+        rc = client_post(client, f"{BASE_URI}/backtest", data=data)
+        assert log_has("Backtesting caused an error: DeadBeef", caplog)
 
-    # Delete backtesting to avoid leakage since the backtest-object may stick around.
-    rc = client_delete(client, f"{BASE_URI}/backtest")
-    assert_response(rc)
+        rc = client_get(client, f"{BASE_URI}/backtest")
+        assert_response(rc)
+        result = rc.json()
+        assert result['status'] == 'error'
+        assert 'Backtest failed' in result['status_msg']
 
-    result = rc.json()
-    assert result['status'] == 'reset'
-    assert not result['running']
-    assert result['status_msg'] == 'Backtest reset'
+        # Delete backtesting to avoid leakage since the backtest-object may stick around.
+        rc = client_delete(client, f"{BASE_URI}/backtest")
+        assert_response(rc)
 
-    # Disallow base64 strategies
-    data['strategy'] = "xx:cHJpbnQoImhlbGxvIHdvcmxkIik="
-    rc = client_post(client, f"{BASE_URI}/backtest", data=json.dumps(data))
-    assert_response(rc, 500)
+        result = rc.json()
+        assert result['status'] == 'reset'
+        assert not result['running']
+        assert result['status_msg'] == 'Backtest reset'
+
+        # Disallow base64 strategies
+        data['strategy'] = "xx:cHJpbnQoImhlbGxvIHdvcmxkIik="
+        rc = client_post(client, f"{BASE_URI}/backtest", data=data)
+        assert_response(rc, 500)
+    finally:
+        Backtesting.cleanup()
 
 
 def test_api_backtest_history(botclient, mocker, testdatadir):
@@ -1667,11 +1966,13 @@ def test_api_backtest_history(botclient, mocker, testdatadir):
     mocker.patch('freqtrade.data.btanalysis._get_backtest_files',
                  return_value=[
                      testdatadir / 'backtest_results/backtest-result_multistrat.json',
-                     testdatadir / 'backtest_results/backtest-result_new.json'
+                     testdatadir / 'backtest_results/backtest-result.json'
                      ])
 
     rc = client_get(client, f"{BASE_URI}/backtest/history")
-    assert_response(rc, 502)
+    assert_response(rc, 503)
+    assert rc.json()['detail'] == 'Bot is not in the correct state.'
+
     ftbot.config['user_data_dir'] = testdatadir
     ftbot.config['runmode'] = RunMode.WEBSERVER
 
@@ -1701,8 +2002,8 @@ def test_health(botclient):
 
     assert_response(rc)
     ret = rc.json()
-    assert ret['last_process_ts'] == 0
-    assert ret['last_process'] == '1970-01-01T00:00:00+00:00'
+    assert ret["last_process_ts"] is None
+    assert ret["last_process"] is None
 
 
 def test_api_ws_subscribe(botclient, mocker):
@@ -1713,18 +2014,20 @@ def test_api_ws_subscribe(botclient, mocker):
 
     with client.websocket_connect(ws_url) as ws:
         ws.send_json({'type': 'subscribe', 'data': ['whitelist']})
+        time.sleep(1)
 
     # Check call count is now 1 as we sent a valid subscribe request
     assert sub_mock.call_count == 1
 
     with client.websocket_connect(ws_url) as ws:
         ws.send_json({'type': 'subscribe', 'data': 'whitelist'})
+        time.sleep(1)
 
     # Call count hasn't changed as the subscribe request was invalid
     assert sub_mock.call_count == 1
 
 
-def test_api_ws_requests(botclient, mocker, caplog):
+def test_api_ws_requests(botclient, caplog):
     caplog.set_level(logging.DEBUG)
 
     ftbot, client = botclient
@@ -1768,28 +2071,23 @@ def test_api_ws_send_msg(default_conf, mocker, caplog):
                                             "password": _TEST_PASS,
                                             "ws_token": _TEST_WS_TOKEN
                                             }})
-        mocker.patch('freqtrade.rpc.telegram.Updater')
+        mocker.patch('freqtrade.rpc.telegram.Telegram._init')
         mocker.patch('freqtrade.rpc.api_server.ApiServer.start_api')
         apiserver = ApiServer(default_conf)
         apiserver.add_rpc_handler(RPC(get_patched_freqtradebot(mocker, default_conf)))
-        apiserver.start_message_queue()
-        # Give the queue thread time to start
-        time.sleep(0.2)
 
-        # Test message_queue coro receives the message
-        test_message = {"type": "status", "data": "test"}
-        apiserver.send_msg(test_message)
-        time.sleep(0.1)  # Not sure how else to wait for the coro to receive the data
-        assert log_has("Found message of type: status", caplog)
+        # Start test client context manager to run lifespan events
+        with TestClient(apiserver.app):
+            # Test message is published on the Message Stream
+            test_message = {"type": "status", "data": "test"}
+            first_waiter = apiserver._message_stream._waiter
+            apiserver.send_msg(test_message)
+            assert first_waiter.result()[0] == test_message
 
-        # Test if exception logged when error occurs in sending
-        mocker.patch('freqtrade.rpc.api_server.ws.channel.ChannelManager.broadcast',
-                     side_effect=Exception)
-
-        apiserver.send_msg(test_message)
-        time.sleep(0.1)  # Not sure how else to wait for the coro to receive the data
-        assert log_has_re(r"Exception happened in background task.*", caplog)
+            second_waiter = apiserver._message_stream._waiter
+            apiserver.send_msg(test_message)
+            assert first_waiter != second_waiter
 
     finally:
-        apiserver.cleanup()
+        ApiServer.shutdown()
         ApiServer.shutdown()

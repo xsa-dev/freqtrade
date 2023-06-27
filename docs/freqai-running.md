@@ -67,17 +67,28 @@ Backtesting mode requires [downloading the necessary data](#downloading-data-to-
     *want* to retrain a new model with the same config file, you should simply change the `identifier`.
     This way, you can return to using any model you wish by simply specifying the `identifier`.
 
+!!! Note
+    Backtesting calls `set_freqai_targets()` one time for each backtest window (where the number of windows is the full backtest timerange divided by the `backtest_period_days` parameter). Doing this means that the targets simulate dry/live behavior without look ahead bias. However, the definition of the features in `feature_engineering_*()` is performed once on the entire backtest timerange. This means that you should be sure that features do look-ahead into the future.
+    More details about look-ahead bias can be found in [Common Mistakes](strategy-customization.md#common-mistakes-when-developing-strategies).
+
 ---
 
 ### Saving prediction data
 
 To allow for tweaking your strategy (**not** the features!), FreqAI will automatically save the predictions during backtesting so that they can be reused for future backtests and live runs using the same `identifier` model. This provides a performance enhancement geared towards enabling **high-level hyperopting** of entry/exit criteria.
 
-An additional directory called `predictions`, which contains all the predictions stored in `hdf` format, will be created in the `unique-id` folder.
+An additional directory called `backtesting_predictions`, which contains all the predictions stored in `hdf` format, will be created in the `unique-id` folder.
 
 To change your **features**, you **must** set a new `identifier` in the config to signal to FreqAI to train new models.
 
 To save the models generated during a particular backtest so that you can start a live deployment from one of them instead of training a new model, you must set `save_backtest_models` to `True` in the config.
+
+### Backtest live collected predictions
+
+FreqAI allow you to reuse live historic predictions through the backtest parameter `--freqai-backtest-live-models`. This can be useful when you want to reuse predictions generated in dry/run for comparison or other study.
+
+The `--timerange` parameter must not be informed, as it will be automatically calculated through the data in the historic predictions file.
+
 
 ### Downloading data to cover the full backtest period
 
@@ -109,13 +120,19 @@ In the presented example config, the user will only allow predictions on models 
 
 Model training parameters are unique to the selected machine learning library. FreqAI allows you to set any parameter for any library using the `model_training_parameters` dictionary in the config. The example config (found in `config_examples/config_freqai.example.json`) shows some of the example parameters associated with `Catboost` and `LightGBM`, but you can add any parameters available in those libraries or any other machine learning library you choose to implement.
 
-Data split parameters are defined in `data_split_parameters` which can be any parameters associated with Scikit-learn's `train_test_split()` function. `train_test_split()` has a parameters called `shuffle` which allows to shuffle the data or keep it unshuffled. This is particularly useful to avoid biasing training with temporally auto-correlated data. More details about these parameters can be found the [Scikit-learn website](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.train_test_split.html) (external website).
+Data split parameters are defined in `data_split_parameters` which can be any parameters associated with scikit-learn's `train_test_split()` function. `train_test_split()` has a parameters called `shuffle` which allows to shuffle the data or keep it unshuffled. This is particularly useful to avoid biasing training with temporally auto-correlated data. More details about these parameters can be found the [scikit-learn website](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.train_test_split.html) (external website).
 
 The FreqAI specific parameter `label_period_candles` defines the offset (number of candles into the future) used for the `labels`. In the presented [example config](freqai-configuration.md#setting-up-the-configuration-file), the user is asking for `labels` that are 24 candles in the future.
 
 ## Continual learning
 
 You can choose to adopt a continual learning scheme by setting `"continual_learning": true` in the config. By enabling `continual_learning`, after training an initial model from scratch, subsequent trainings will start from the final model state of the preceding training. This gives the new model a "memory" of the previous state. By default, this is set to `False` which means that all new models are trained from scratch, without input from previous models.
+
+???+ danger "Continual learning enforces a constant parameter space"
+    Since `continual_learning` means that the model parameter space *cannot* change between trainings, `principal_component_analysis` is automatically disabled when `continual_learning` is enabled. Hint: PCA changes the parameter space and the number of features, learn more about PCA [here](freqai-feature-engineering.md#data-dimensionality-reduction-with-principal-component-analysis).
+
+???+ danger "Experimental functionality"
+    Beware that this is currently a naive approach to incremental learning, and it has a high probability of overfitting/getting stuck in local minima while the market moves away from your model. We have the mechanics available in FreqAI primarily for experimental purposes and so that it is ready for more mature approaches to continual learning in chaotic systems like the crypto market.
 
 ## Hyperopt
 
@@ -128,7 +145,7 @@ freqtrade hyperopt --hyperopt-loss SharpeHyperOptLoss --strategy FreqaiExampleSt
 `hyperopt` requires you to have the data pre-downloaded in the same fashion as if you were doing [backtesting](#backtesting). In addition, you must consider some restrictions when trying to hyperopt FreqAI strategies:
 
 - The `--analyze-per-epoch` hyperopt parameter is not compatible with FreqAI.
-- It's not possible to hyperopt indicators in the `populate_any_indicators()` function. This means that you cannot optimize model parameters using hyperopt. Apart from this exception, it is possible to optimize all other [spaces](hyperopt.md#running-hyperopt-with-smaller-search-space).
+- It's not possible to hyperopt indicators in the `feature_engineering_*()` and `set_freqai_targets()` functions. This means that you cannot optimize model parameters using hyperopt. Apart from this exception, it is possible to optimize all other [spaces](hyperopt.md#running-hyperopt-with-smaller-search-space).
 - The backtesting instructions also apply to hyperopt.
 
 The best method for combining hyperopt and FreqAI is to focus on hyperopting entry/exit thresholds/criteria. You need to focus on hyperopting parameters that are not used in your features. For example, you should not try to hyperopt rolling window lengths in the feature creation, or any part of the FreqAI config which changes predictions. In order to efficiently hyperopt the FreqAI strategy, FreqAI stores predictions as dataframes and reuses them. Hence the requirement to hyperopt entry/exit thresholds/criteria only.
@@ -144,7 +161,14 @@ This specific hyperopt would help you understand the appropriate `DI_values` for
 
 ## Using Tensorboard
 
-CatBoost models benefit from tracking training metrics via Tensorboard. You can take advantage of the FreqAI integration to track training and evaluation performance across all coins and across all retrainings. Tensorboard is activated via the following command:
+!!! note "Availability"
+    FreqAI includes tensorboard for a variety of models, including XGBoost, all PyTorch models, Reinforcement Learning, and Catboost. If you would like to see Tensorboard integrated into another model type, please open an issue on the [Freqtrade GitHub](https://github.com/freqtrade/freqtrade/issues)
+
+!!! danger "Requirements"
+    Tensorboard logging requires the FreqAI torch installation/docker image.
+
+
+The easiest way to use tensorboard is to ensure `freqai.activate_tensorboard` is set to `True` (default setting) in your configuration file, run FreqAI, then open a separate shell and run:
 
 ```bash
 cd freqtrade
@@ -155,15 +179,6 @@ where `unique-id` is the `identifier` set in the `freqai` configuration file. Th
 
 ![tensorboard](assets/tensorboard.jpg)
 
-## Setting up a follower
 
-You can indicate to the bot that it should not train models, but instead should look for models trained by a leader with a specific `identifier` by defining:
-
-```json
-    "freqai": {
-        "follow_mode": true,
-        "identifier": "example"
-    }
-```
-
-In this example, the user has a leader bot with the `"identifier": "example"`. The leader bot is already running or is launched simultaneously with the follower. The follower will load models created by the leader and inference them to obtain predictions instead of training its own models.
+!!! note "Deactivate for improved performance"
+    Tensorboard logging can slow down training and should be deactivated for production use.

@@ -1,22 +1,19 @@
-import asyncio
 import logging
 from ipaddress import IPv4Address
-from threading import Thread
-from typing import Any, Dict
+from typing import Any, Optional
 
 import orjson
 import uvicorn
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-# Look into alternatives
-from janus import Queue as ThreadedQueue
 from starlette.responses import JSONResponse
 
 from freqtrade.constants import Config
 from freqtrade.exceptions import OperationalException
 from freqtrade.rpc.api_server.uvicorn_threaded import UvicornServer
-from freqtrade.rpc.api_server.ws import ChannelManager
+from freqtrade.rpc.api_server.ws.message_stream import MessageStream
 from freqtrade.rpc.rpc import RPC, RPCException, RPCHandler
+from freqtrade.rpc.rpc_types import RPCSendMsg
 
 
 logger = logging.getLogger(__name__)
@@ -39,20 +36,10 @@ class ApiServer(RPCHandler):
     __initialized = False
 
     _rpc: RPC
-    # Backtesting type: Backtesting
-    _bt = None
-    _bt_data = None
-    _bt_timerange = None
-    _bt_last_config: Config = {}
     _has_rpc: bool = False
-    _bgtask_running: bool = False
     _config: Config = {}
-    # Exchange - only available in webserver mode.
-    _exchange = None
-    # websocket message queue stuff
-    _ws_channel_manager = None
-    _ws_thread = None
-    _ws_loop = None
+    # websocket message stuff
+    _message_stream: Optional[MessageStream] = None
 
     def __new__(cls, *args, **kwargs):
         """
@@ -70,14 +57,10 @@ class ApiServer(RPCHandler):
             return
         self._standalone: bool = standalone
         self._server = None
-        self._ws_queue = None
-        self._ws_background_task = None
 
         ApiServer.__initialized = True
 
         api_config = self._config['api_server']
-
-        ApiServer._ws_channel_manager = ChannelManager()
 
         self.app = FastAPI(title="Freqtrade API",
                            docs_url='/docs' if api_config.get('enable_openapi', False) else None,
@@ -91,7 +74,7 @@ class ApiServer(RPCHandler):
         """
         Attach rpc handler
         """
-        if not self._has_rpc:
+        if not ApiServer._has_rpc:
             ApiServer._rpc = rpc
             ApiServer._has_rpc = True
         else:
@@ -104,20 +87,8 @@ class ApiServer(RPCHandler):
         del ApiServer._rpc
         if self._server and not self._standalone:
             logger.info("Stopping API Server")
+            # self._server.force_exit, self._server.should_exit = True, True
             self._server.cleanup()
-
-        if self._ws_thread and self._ws_loop:
-            logger.info("Stopping API Server background tasks")
-
-            if self._ws_background_task:
-                # Cancel the queue task
-                self._ws_background_task.cancel()
-
-            self._ws_thread.join()
-
-        self._ws_thread = None
-        self._ws_loop = None
-        self._ws_background_task = None
 
     @classmethod
     def shutdown(cls):
@@ -127,10 +98,12 @@ class ApiServer(RPCHandler):
         cls._has_rpc = False
         cls._rpc = None
 
-    def send_msg(self, msg: Dict[str, str]) -> None:
-        if self._ws_queue:
-            sync_q = self._ws_queue.sync_q
-            sync_q.put(msg)
+    def send_msg(self, msg: RPCSendMsg) -> None:
+        """
+        Publish the message to the message stream
+        """
+        if ApiServer._message_stream:
+            ApiServer._message_stream.publish(msg)
 
     def handle_rpc_exception(self, request, exc):
         logger.exception(f"API Error calling: {exc}")
@@ -141,10 +114,12 @@ class ApiServer(RPCHandler):
 
     def configure_app(self, app: FastAPI, config):
         from freqtrade.rpc.api_server.api_auth import http_basic_or_jwt_token, router_login
+        from freqtrade.rpc.api_server.api_background_tasks import router as api_bg_tasks
         from freqtrade.rpc.api_server.api_backtest import router as api_backtest
         from freqtrade.rpc.api_server.api_v1 import router as api_v1
         from freqtrade.rpc.api_server.api_v1 import router_public as api_v1_public
         from freqtrade.rpc.api_server.api_ws import router as ws_router
+        from freqtrade.rpc.api_server.deps import is_webserver_mode
         from freqtrade.rpc.api_server.web_ui import router_ui
 
         app.include_router(api_v1_public, prefix="/api/v1")
@@ -153,7 +128,12 @@ class ApiServer(RPCHandler):
                            dependencies=[Depends(http_basic_or_jwt_token)],
                            )
         app.include_router(api_backtest, prefix="/api/v1",
-                           dependencies=[Depends(http_basic_or_jwt_token)],
+                           dependencies=[Depends(http_basic_or_jwt_token),
+                                         Depends(is_webserver_mode)],
+                           )
+        app.include_router(api_bg_tasks, prefix="/api/v1",
+                           dependencies=[Depends(http_basic_or_jwt_token),
+                                         Depends(is_webserver_mode)],
                            )
         app.include_router(ws_router, prefix="/api/v1")
         app.include_router(router_login, prefix="/api/v1", tags=["auth"])
@@ -169,50 +149,30 @@ class ApiServer(RPCHandler):
         )
 
         app.add_exception_handler(RPCException, self.handle_rpc_exception)
+        app.add_event_handler(
+            event_type="startup",
+            func=self._api_startup_event
+        )
+        app.add_event_handler(
+            event_type="shutdown",
+            func=self._api_shutdown_event
+        )
 
-    def start_message_queue(self):
-        if self._ws_thread:
-            return
+    async def _api_startup_event(self):
+        """
+        Creates the MessageStream class on startup
+        so it has access to the same event loop
+        as uvicorn
+        """
+        if not ApiServer._message_stream:
+            ApiServer._message_stream = MessageStream()
 
-        # Create a new loop, as it'll be just for the background thread
-        self._ws_loop = asyncio.new_event_loop()
-
-        # Start the thread
-        self._ws_thread = Thread(target=self._ws_loop.run_forever)
-        self._ws_thread.start()
-
-        # Finally, submit the coro to the thread
-        self._ws_background_task = asyncio.run_coroutine_threadsafe(
-            self._broadcast_queue_data(), loop=self._ws_loop)
-
-    async def _broadcast_queue_data(self):
-        # Instantiate the queue in this coroutine so it's attached to our loop
-        self._ws_queue = ThreadedQueue()
-        async_queue = self._ws_queue.async_q
-
-        try:
-            while True:
-                logger.debug("Getting queue messages...")
-                # Get data from queue
-                message = await async_queue.get()
-                logger.debug(f"Found message of type: {message.get('type')}")
-                # Broadcast it
-                await self._ws_channel_manager.broadcast(message)
-                # Limit messages per sec.
-                # Could cause problems with queue size if too low, and
-                # problems with network traffik if too high.
-                await asyncio.sleep(0.001)
-        except asyncio.CancelledError:
-            pass
-
-        # For testing, shouldn't happen when stable
-        except Exception as e:
-            logger.exception(f"Exception happened in background task: {e}")
-
-        finally:
-            # Disconnect channels and stop the loop on cancel
-            await self._ws_channel_manager.disconnect_all()
-            self._ws_loop.stop()
+    async def _api_shutdown_event(self):
+        """
+        Removes the MessageStream class on shutdown
+        """
+        if ApiServer._message_stream:
+            ApiServer._message_stream = None
 
     def start_api(self):
         """
@@ -252,7 +212,6 @@ class ApiServer(RPCHandler):
             if self._standalone:
                 self._server.run()
             else:
-                self.start_message_queue()
                 self._server.run_in_thread()
         except Exception:
             logger.exception("Api server failed to start.")

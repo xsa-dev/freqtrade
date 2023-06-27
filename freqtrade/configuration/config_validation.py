@@ -27,10 +27,7 @@ def _extend_validator(validator_class):
             if 'default' in subschema:
                 instance.setdefault(prop, subschema['default'])
 
-        for error in validate_properties(
-            validator, properties, instance, schema,
-        ):
-            yield error
+        yield from validate_properties(validator, properties, instance, schema)
 
     return validators.extend(
         validator_class, {'properties': set_defaults}
@@ -86,6 +83,7 @@ def validate_config_consistency(conf: Dict[str, Any], preliminary: bool = False)
     _validate_unlimited_amount(conf)
     _validate_ask_orderbook(conf)
     _validate_freqai_hyperopt(conf)
+    _validate_freqai_backtest(conf)
     _validate_freqai_include_timeframes(conf)
     _validate_consumers(conf)
     validate_migrated_strategy_settings(conf)
@@ -176,7 +174,7 @@ def _validate_whitelist(conf: Dict[str, Any]) -> None:
         return
 
     for pl in conf.get('pairlists', [{'method': 'StaticPairList'}]):
-        if (pl.get('method') == 'StaticPairList'
+        if (isinstance(pl, dict) and pl.get('method') == 'StaticPairList'
                 and not conf.get('exchange', {}).get('pair_whitelist')):
             raise OperationalException("StaticPairList requires pair_whitelist to be set.")
 
@@ -353,6 +351,33 @@ def _validate_freqai_include_timeframes(conf: Dict[str, Any]) -> None:
             raise OperationalException(
                 f"Main timeframe of {main_tf} must be smaller or equal to FreqAI "
                 f"`include_timeframes`.Offending include-timeframes: {', '.join(offending_lines)}")
+
+        # Ensure that the base timeframe is included in the include_timeframes list
+        if main_tf not in freqai_include_timeframes:
+            feature_parameters = conf.get('freqai', {}).get('feature_parameters', {})
+            include_timeframes = [main_tf] + freqai_include_timeframes
+            conf.get('freqai', {}).get('feature_parameters', {}) \
+                .update({**feature_parameters, 'include_timeframes': include_timeframes})
+
+
+def _validate_freqai_backtest(conf: Dict[str, Any]) -> None:
+    if conf.get('runmode', RunMode.OTHER) == RunMode.BACKTEST:
+        freqai_enabled = conf.get('freqai', {}).get('enabled', False)
+        timerange = conf.get('timerange')
+        freqai_backtest_live_models = conf.get('freqai_backtest_live_models', False)
+        if freqai_backtest_live_models and freqai_enabled and timerange:
+            raise OperationalException(
+                'Using timerange parameter is not supported with '
+                '--freqai-backtest-live-models parameter.')
+
+        if freqai_backtest_live_models and not freqai_enabled:
+            raise OperationalException(
+                'Using --freqai-backtest-live-models parameter is only '
+                'supported with a FreqAI strategy.')
+
+        if freqai_enabled and not freqai_backtest_live_models and not timerange:
+            raise OperationalException(
+                'Please pass --timerange if you intend to use FreqAI for backtesting.')
 
 
 def _validate_consumers(conf: Dict[str, Any]) -> None:

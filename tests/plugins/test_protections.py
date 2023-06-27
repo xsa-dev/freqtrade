@@ -1,5 +1,5 @@
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -24,8 +24,8 @@ def generate_mock_trade(pair: str, fee: float, is_open: bool,
         stake_amount=0.01,
         fee_open=fee,
         fee_close=fee,
-        open_date=datetime.utcnow() - timedelta(minutes=min_ago_open or 200),
-        close_date=datetime.utcnow() - timedelta(minutes=min_ago_close or 30),
+        open_date=datetime.now(timezone.utc) - timedelta(minutes=min_ago_open or 200),
+        close_date=datetime.now(timezone.utc) - timedelta(minutes=min_ago_close or 30),
         open_rate=open_rate,
         is_open=is_open,
         amount=0.01 / open_rate,
@@ -39,6 +39,8 @@ def generate_mock_trade(pair: str, fee: float, is_open: bool,
         order_id=f'{pair}-{trade.entry_side}-{trade.open_date}',
         ft_is_open=False,
         ft_pair=pair,
+        ft_amount=trade.amount,
+        ft_price=trade.open_rate,
         amount=trade.amount,
         filled=trade.amount,
         remaining=0,
@@ -49,16 +51,19 @@ def generate_mock_trade(pair: str, fee: float, is_open: bool,
         side=trade.entry_side,
     ))
     if not is_open:
+        close_price = open_rate * (2 - profit_rate if is_short else profit_rate)
         trade.orders.append(Order(
             ft_order_side=trade.exit_side,
             order_id=f'{pair}-{trade.exit_side}-{trade.close_date}',
             ft_is_open=False,
             ft_pair=pair,
+            ft_amount=trade.amount,
+            ft_price=trade.open_rate,
             amount=trade.amount,
             filled=trade.amount,
             remaining=0,
-            price=open_rate * (2 - profit_rate if is_short else profit_rate),
-            average=open_rate * (2 - profit_rate if is_short else profit_rate),
+            price=close_price,
+            average=close_price,
             status="closed",
             order_type="market",
             side=trade.exit_side,
@@ -66,10 +71,10 @@ def generate_mock_trade(pair: str, fee: float, is_open: bool,
 
     trade.recalc_open_trade_value()
     if not is_open:
-        trade.close(open_rate * (2 - profit_rate if is_short else profit_rate))
+        trade.close(close_price)
         trade.exit_reason = exit_reason
 
-    Trade.query.session.add(trade)
+    Trade.session.add(trade)
     Trade.commit()
     return trade
 
@@ -82,9 +87,9 @@ def test_protectionmanager(mocker, default_conf):
     for handler in freqtrade.protections._protection_handlers:
         assert handler.name in constants.AVAILABLE_PROTECTIONS
         if not handler.has_global_stop:
-            assert handler.global_stop(datetime.utcnow(), '*') is None
+            assert handler.global_stop(datetime.now(timezone.utc), '*') is None
         if not handler.has_local_stop:
-            assert handler.stop_per_pair('XRP/BTC', datetime.utcnow(), '*') is None
+            assert handler.stop_per_pair('XRP/BTC', datetime.now(timezone.utc), '*') is None
 
 
 @pytest.mark.parametrize('timeframe,expected,protconf', [
