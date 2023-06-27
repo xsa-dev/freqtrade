@@ -5,28 +5,51 @@ from setuptools import setup
 plot = ['plotly>=4.0']
 hyperopt = [
     'scipy',
-    'scikit-learn',
+    'scikit-learn<=1.1.3',
     'scikit-optimize>=0.7.0',
     'filelock',
-    'progressbar2',
 ]
 
 freqai = [
     'scikit-learn',
+    'joblib',
     'catboost; platform_machine != "aarch64"',
     'lightgbm',
+    'xgboost',
+    'tensorboard',
+    'datasieve>=0.1.5'
+]
+
+freqai_rl = [
+    'torch',
+    'gymnasium',
+    'stable-baselines3',
+    'sb3-contrib',
+    'tqdm'
+]
+
+hdf5 = [
+    'tables',
+    'blosc',
 ]
 
 develop = [
     'coveralls',
-    'flake8',
-    'flake8-tidy-imports',
     'mypy',
+    'ruff',
+    'pre-commit',
     'pytest',
     'pytest-asyncio',
     'pytest-cov',
     'pytest-mock',
     'pytest-random-order',
+    'isort',
+    'time-machine',
+    'types-cachetools',
+    'types-filelock',
+    'types-requests',
+    'types-tabulate',
+    'types-python-dateutil'
 ]
 
 jupyter = [
@@ -36,7 +59,7 @@ jupyter = [
     'nbconvert',
 ]
 
-all_extra = plot + develop + jupyter + hyperopt + freqai
+all_extra = plot + develop + jupyter + hyperopt + hdf5 + freqai + freqai_rl
 
 setup(
     tests_require=[
@@ -47,10 +70,10 @@ setup(
     ],
     install_requires=[
         # from requirements.txt
-        'ccxt>=1.92.9',
-        'SQLAlchemy',
-        'python-telegram-bot>=13.4',
-        'arrow>=0.17.0',
+        'ccxt>=3.0.0',
+        'SQLAlchemy>=2.0.6',
+        'python-telegram-bot>=20.1',
+        'arrow>=1.0.0',
         'cachetools',
         'requests',
         'urllib3',
@@ -70,9 +93,8 @@ setup(
         'prompt-toolkit',
         'numpy',
         'pandas',
-        'tables',
-        'blosc',
         'joblib>=1.2.0',
+        'rich',
         'pyarrow; platform_machine != "armv7l"',
         'fastapi',
         'pydantic>=1.8.0',
@@ -82,14 +104,22 @@ setup(
         'aiofiles',
         'schedule',
         'websockets',
-        'janus'
+        'janus',
+        'ast-comments',
+        'aiohttp',
+        'cryptography',
+        'httpx>=0.24.1',
+        'python-dateutil',
+        'packaging',
     ],
     extras_require={
         'dev': all_extra,
         'plot': plot,
         'jupyter': jupyter,
         'hyperopt': hyperopt,
+        'hdf5': hdf5,
         'freqai': freqai,
+        'freqai_rl': freqai_rl,
         'all': all_extra,
     },
 )

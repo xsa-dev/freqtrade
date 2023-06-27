@@ -9,9 +9,6 @@ This same command can also be used to update freqUI, should there be a new relea
 
 Once the bot is started in trade / dry-run mode (with `freqtrade trade`) - the UI will be available under the configured port below (usually `http://127.0.0.1:8080`).
 
-!!! info "Alpha release"
-    FreqUI is still considered an alpha release - if you encounter bugs or inconsistencies please open a [FreqUI issue](https://github.com/freqtrade/frequi/issues/new/choose).
-
 !!! Note "developers"
     Developers should not use this method, but instead use the method described in the [freqUI repository](https://github.com/freqtrade/frequi) to get the source-code of freqUI.
 
@@ -137,7 +134,9 @@ python3 scripts/rest_client.py --config rest_config.json <command> [optional par
 | `reload_config` | Reloads the configuration file.
 | `trades` | List last trades. Limited to 500 trades per call.
 | `trade/<tradeid>` | Get specific trade.
-| `delete_trade <trade_id>` | Remove trade from the database. Tries to close open orders. Requires manual handling of this trade on the exchange.
+| `trade/<tradeid>` | DELETE - Remove trade from the database. Tries to close open orders. Requires manual handling of this trade on the exchange.
+| `trade/<tradeid>/open-order` | DELETE - Cancel open order for this trade.
+| `trade/<tradeid>/reload` | GET - Reload a trade from the Exchange. Only works in live, and can potentially help recover a trade that was manually sold on the exchange.
 | `show_config` | Shows part of the current configuration with relevant settings to operation.
 | `logs` | Shows last log messages.
 | `status` | Lists all open trades.
@@ -163,7 +162,7 @@ python3 scripts/rest_client.py --config rest_config.json <command> [optional par
 | `strategy <strategy>` | Get specific Strategy content. **Alpha**
 | `available_pairs` | List available backtest data. **Alpha**
 | `version` | Show version.
-| `sysinfo` | Show informations about the system load.
+| `sysinfo` | Show information about the system load.
 | `health` | Show bot health (last bot loop).
 
 !!! Warning "Alpha status"
@@ -191,6 +190,11 @@ blacklist
 	Show the current blacklist.
 
         :param add: List of coins to add (example: "BNB/BTC")
+
+cancel_open_order
+	Cancel open order for trade.
+
+        :param trade_id: Cancels open orders for this trade.
 
 count
 	Return the amount of open trades.
@@ -274,7 +278,6 @@ reload_config
 	Reload configuration.
 
 show_config
-
         Returns part of the configuration, relevant for trading operations.
 
 start
@@ -319,6 +322,7 @@ version
 
 whitelist
 	Show the current whitelist.
+
 
 ```
 
@@ -388,6 +392,44 @@ Now anytime those types of RPC messages are sent in the bot, you will receive th
   }
 }
 ```
+
+#### Reverse Proxy setup
+
+When using [Nginx](https://nginx.org/en/docs/), the following configuration is required for WebSockets to work (Note this configuration is incomplete, it's missing some information and can not be used as is):
+
+Please make sure to replace `<freqtrade_listen_ip>` (and the subsequent port) with the IP and Port matching your configuration/setup.
+
+```
+http {
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        '' close;
+    }
+
+    #...
+
+    server {
+        #...
+
+        location / {
+            proxy_http_version 1.1;
+            proxy_pass http://<freqtrade_listen_ip>:8080;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_set_header Host $host;
+        }
+    }
+}
+```
+
+To properly configure your reverse proxy (securely), please consult it's documentation for proxying websockets.
+
+- **Traefik**: Traefik supports websockets out of the box, see the [documentation](https://doc.traefik.io/traefik/)
+- **Caddy**: Caddy v2 supports websockets out of the box, see the [documentation](https://caddyserver.com/docs/v2-upgrade#proxy)
+
+!!! Tip "SSL certificates"
+    You can use tools like certbot to setup ssl certificates to access your bot's UI through encrypted connection by using any fo the above reverse proxies.
+    While this will protect your data in transit, we do not recommend to run the freqtrade API outside of your private network (VPN, SSH tunnel).
 
 ### OpenAPI interface
 

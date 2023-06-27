@@ -263,7 +263,6 @@ equos            True     missing opt: fetchTicker, fetchTickers
 eterbase         True
 fcoin            True     missing opt: fetchMyTrades, fetchTickers
 fcoinjp          True     missing opt: fetchMyTrades, fetchTickers
-ftx              True
 gateio           True
 gemini           True
 gopax            True
@@ -369,7 +368,6 @@ fcoin               True     missing opt: fetchMyTrades, fetchTickers
 fcoinjp             True     missing opt: fetchMyTrades, fetchTickers
 flowbtc             False    missing: fetchOrder, fetchOHLCV
 foxbit              False    missing: fetchOrder, fetchOHLCV
-ftx                 True
 gateio              True
 gemini              True
 gopax               True
@@ -654,7 +652,7 @@ Common arguments:
 
 You can also use webserver mode via docker.
 Starting a one-off container requires the configuration of the port explicitly, as ports are not exposed by default.
-You can use `docker-compose run --rm -p 127.0.0.1:8080:8080 freqtrade webserver` to start a one-off container that'll be removed once you stop it. This assumes that port 8080 is still available and no other bot is running on that port.
+You can use `docker compose run --rm -p 127.0.0.1:8080:8080 freqtrade webserver` to start a one-off container that'll be removed once you stop it. This assumes that port 8080 is still available and no other bot is running on that port.
 
 Alternatively, you can reconfigure the docker-compose file to have the command updated:
 
@@ -664,7 +662,7 @@ Alternatively, you can reconfigure the docker-compose file to have the command u
       --config /freqtrade/user_data/config.json
 ```
 
-You can now use `docker-compose up` to start the webserver.
+You can now use `docker compose up` to start the webserver.
 This assumes that the configuration has a webserver enabled and configured for docker (listening port = `0.0.0.0`).
 
 !!! Tip
@@ -724,6 +722,10 @@ usage: freqtrade backtesting-analysis [-h] [-v] [--logfile FILE] [-V]
                                       [--enter-reason-list ENTER_REASON_LIST [ENTER_REASON_LIST ...]]
                                       [--exit-reason-list EXIT_REASON_LIST [EXIT_REASON_LIST ...]]
                                       [--indicator-list INDICATOR_LIST [INDICATOR_LIST ...]]
+                                      [--timerange YYYYMMDD-[YYYYMMDD]]
+                                      [--rejected]
+                                      [--analysis-to-csv]
+                                      [--analysis-csv-path PATH]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -737,15 +739,27 @@ optional arguments:
                         pair and enter_tag, 4: by pair, enter_ and exit_tag
                         (this can get quite large)
   --enter-reason-list ENTER_REASON_LIST [ENTER_REASON_LIST ...]
-                        Comma separated list of entry signals to analyse.
-                        Default: all. e.g. 'entry_tag_a,entry_tag_b'
+                        Space separated list of entry signals to analyse.
+                        Default: all. e.g. 'entry_tag_a entry_tag_b'
   --exit-reason-list EXIT_REASON_LIST [EXIT_REASON_LIST ...]
-                        Comma separated list of exit signals to analyse.
+                        Space separated list of exit signals to analyse.
                         Default: all. e.g.
-                        'exit_tag_a,roi,stop_loss,trailing_stop_loss'
+                        'exit_tag_a roi stop_loss trailing_stop_loss'
   --indicator-list INDICATOR_LIST [INDICATOR_LIST ...]
-                        Comma separated list of indicators to analyse. e.g.
-                        'close,rsi,bb_lowerband,profit_abs'
+                        Space separated list of indicators to analyse. e.g.
+                        'close rsi bb_lowerband profit_abs'
+  --timerange YYYYMMDD-[YYYYMMDD]
+                        Timerange to filter trades for analysis, 
+                        start inclusive, end exclusive. e.g.
+                        20220101-20220201
+  --rejected
+                        Print out rejected trades table
+  --analysis-to-csv
+                        Write out tables to individual CSVs, by default to 
+                        'user_data/backtest_results' unless '--analysis-csv-path' is given.
+  --analysis-csv-path [PATH]
+                        Optional path where individual CSVs will be written. If not used,
+                        CSVs will be written to 'user_data/backtest_results'.
 
 Common arguments:
   -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).
@@ -951,4 +965,48 @@ Print trades with id 2 and 3 as json
 
 ``` bash
 freqtrade show-trades --db-url sqlite:///tradesv3.sqlite --trade-ids 2 3 --print-json
+```
+
+### Strategy-Updater
+
+Updates listed strategies or all strategies within the strategies folder to be v3 compliant.
+If the command runs without --strategy-list then all strategies inside the strategies folder will be converted.
+Your original strategy will remain available in the `user_data/strategies_orig_updater/` directory.
+
+!!! Warning "Conversion results"
+    Strategy updater will work on a "best effort" approach. Please do your due diligence and verify the results of the conversion.
+    We also recommend to run a python formatter (e.g. `black`) to format results in a sane manner.
+
+```
+usage: freqtrade strategy-updater [-h] [-v] [--logfile FILE] [-V] [-c PATH]
+                                  [-d PATH] [--userdir PATH]
+                                  [--strategy-list STRATEGY_LIST [STRATEGY_LIST ...]]
+
+options:
+  -h, --help            show this help message and exit
+  --strategy-list STRATEGY_LIST [STRATEGY_LIST ...]
+                        Provide a space-separated list of strategies to
+                        backtest. Please note that timeframe needs to be set
+                        either in config or via command line. When using this
+                        together with `--export trades`, the strategy-name is
+                        injected into the filename (so `backtest-data.json`
+                        becomes `backtest-data-SampleStrategy.json`
+
+Common arguments:
+  -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).
+  --logfile FILE, --log-file FILE
+                        Log to the file specified. Special values are:
+                        'syslog', 'journald'. See the documentation for more
+                        details.
+  -V, --version         show program's version number and exit
+  -c PATH, --config PATH
+                        Specify configuration file (default:
+                        `userdir/config.json` or `config.json` whichever
+                        exists). Multiple --config options may be used. Can be
+                        set to `-` to read config from stdin.
+  -d PATH, --datadir PATH, --data-dir PATH
+                        Path to directory with historical backtesting data.
+  --userdir PATH, --user-data-dir PATH
+                        Path to userdata directory.
+
 ```

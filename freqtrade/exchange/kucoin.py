@@ -2,6 +2,7 @@
 import logging
 from typing import Dict
 
+from freqtrade.constants import BuySell
 from freqtrade.exchange import Exchange
 
 
@@ -27,17 +28,7 @@ class Kucoin(Exchange):
         "ohlcv_candle_limit": 1500,
     }
 
-    def stoploss_adjust(self, stop_loss: float, order: Dict, side: str) -> bool:
-        """
-        Verify stop_loss against stoploss-order value (limit or price)
-        Returns True if adjustment is necessary.
-        """
-        return (
-            order.get('stopPrice', None) is None
-            or stop_loss > float(order['stopPrice'])
-        )
-
-    def _get_stop_params(self, ordertype: str, stop_price: float) -> Dict:
+    def _get_stop_params(self, side: BuySell, ordertype: str, stop_price: float) -> Dict:
 
         params = self._params.copy()
         params.update({
@@ -45,3 +36,35 @@ class Kucoin(Exchange):
             'stop': 'loss'
             })
         return params
+
+    def create_order(
+            self,
+            *,
+            pair: str,
+            ordertype: str,
+            side: BuySell,
+            amount: float,
+            rate: float,
+            leverage: float,
+            reduceOnly: bool = False,
+            time_in_force: str = 'GTC',
+            ) -> Dict:
+
+        res = super().create_order(
+            pair=pair,
+            ordertype=ordertype,
+            side=side,
+            amount=amount,
+            rate=rate,
+            leverage=leverage,
+            reduceOnly=reduceOnly,
+            time_in_force=time_in_force,
+        )
+        # Kucoin returns only the order-id.
+        # ccxt returns status = 'closed' at the moment - which is information ccxt invented.
+        # Since we rely on status heavily, we must set it to 'open' here.
+        # ref: https://github.com/ccxt/ccxt/pull/16674, (https://github.com/ccxt/ccxt/pull/16553)
+        if not self._config['dry_run']:
+            res['type'] = ordertype
+            res['status'] = 'open'
+        return res

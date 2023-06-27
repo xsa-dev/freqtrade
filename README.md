@@ -1,6 +1,7 @@
 # ![freqtrade](https://raw.githubusercontent.com/freqtrade/freqtrade/develop/docs/assets/freqtrade_poweredby.svg)
 
 [![Freqtrade CI](https://github.com/freqtrade/freqtrade/workflows/Freqtrade%20CI/badge.svg)](https://github.com/freqtrade/freqtrade/actions/)
+[![DOI](https://joss.theoj.org/papers/10.21105/joss.04864/status.svg)](https://doi.org/10.21105/joss.04864)
 [![Coverage Status](https://coveralls.io/repos/github/freqtrade/freqtrade/badge.svg?branch=develop&service=github)](https://coveralls.io/github/freqtrade/freqtrade?branch=develop)
 [![Documentation](https://readthedocs.org/projects/freqtrade/badge/)](https://www.freqtrade.io)
 [![Maintainability](https://api.codeclimate.com/v1/badges/5737e6d668200b7518ff/maintainability)](https://codeclimate.com/github/freqtrade/freqtrade/maintainability)
@@ -28,7 +29,6 @@ Please read the [exchange specific notes](docs/exchanges.md) to learn about even
 
 - [X] [Binance](https://www.binance.com/)
 - [X] [Bittrex](https://bittrex.com/)
-- [X] [FTX](https://ftx.com/#a=2258149)
 - [X] [Gate.io](https://www.gate.io/ref/6266643)
 - [X] [Huobi](http://huobi.com/)
 - [X] [Kraken](https://kraken.com/)
@@ -39,7 +39,8 @@ Please read the [exchange specific notes](docs/exchanges.md) to learn about even
 
 - [X] [Binance](https://www.binance.com/)
 - [X] [Gate.io](https://www.gate.io/ref/6266643)
-- [X] [OKX](https://okx.com/).
+- [X] [OKX](https://okx.com/)
+- [X] [Bybit](https://bybit.com/)
 
 Please make sure to read the [exchange specific notes](docs/exchanges.md), as well as the [trading with leverage](docs/leverage.md) documentation before diving in.
 
@@ -164,6 +165,10 @@ first. If it hasn't been reported, please
 ensure you follow the template guide so that the team can assist you as
 quickly as possible.
 
+For every [issue](https://github.com/freqtrade/freqtrade/issues/new/choose) created, kindly follow up and mark satisfaction or reminder to close issue when equilibrium ground is reached.
+
+--Maintain github's [community policy](https://docs.github.com/en/site-policy/github-terms/github-community-code-of-conduct)--
+
 ### [Feature Requests](https://github.com/freqtrade/freqtrade/labels/enhancement)
 
 Have you a great idea to improve the bot you want to share? Please,
@@ -205,6 +210,6 @@ To run this bot we recommend you a cloud instance with a minimum of:
 - [Python >= 3.8](http://docs.python-guide.org/en/latest/starting/installation/)
 - [pip](https://pip.pypa.io/en/stable/installing/)
 - [git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git)
-- [TA-Lib](https://mrjbq7.github.io/ta-lib/install.html)
+- [TA-Lib](https://ta-lib.github.io/ta-lib-python/)
 - [virtualenv](https://virtualenv.pypa.io/en/stable/installation.html) (Recommended)
 - [Docker](https://www.docker.com/products/docker) (Recommended)
