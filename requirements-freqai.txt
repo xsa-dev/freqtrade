@@ -11,3 +11,4 @@ lightgbm==3.3.4
 xgboost==1.7.3
 tensorboard==2.11.2
 numpy>=1.22.2
+wheel>=0.38.0 # not directly required, pinned by Snyk to avoid a vulnerability
