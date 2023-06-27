@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Tuple
 from freqtrade.enums import CandleType, PriceType, RPCMessageType
 
 
+DOCS_LINK = "https://www.freqtrade.io/en/stable"
 DEFAULT_CONFIG = 'config.json'
 DEFAULT_EXCHANGE = 'bittrex'
 PROCESS_THROTTLE_SECS = 5  # sec
@@ -36,9 +37,10 @@ AVAILABLE_PAIRLISTS = ['StaticPairList', 'VolumePairList', 'ProducerPairList', '
                        'AgeFilter', 'OffsetFilter', 'PerformanceFilter',
                        'PrecisionFilter', 'PriceFilter', 'RangeStabilityFilter',
                        'ShuffleFilter', 'SpreadFilter', 'VolatilityFilter']
-AVAILABLE_PROTECTIONS = ['CooldownPeriod', 'LowProfitPairs', 'MaxDrawdown', 'StoplossGuard']
-AVAILABLE_DATAHANDLERS_TRADES = ['json', 'jsongz', 'hdf5']
-AVAILABLE_DATAHANDLERS = AVAILABLE_DATAHANDLERS_TRADES + ['feather', 'parquet']
+AVAILABLE_PROTECTIONS = ['CooldownPeriod',
+                         'LowProfitPairs', 'MaxDrawdown', 'StoplossGuard']
+AVAILABLE_DATAHANDLERS_TRADES = ['json', 'jsongz', 'hdf5', 'feather']
+AVAILABLE_DATAHANDLERS = AVAILABLE_DATAHANDLERS_TRADES + ['parquet']
 BACKTEST_BREAKDOWNS = ['day', 'week', 'month']
 BACKTEST_CACHE_AGE = ['none', 'day', 'week', 'month']
 BACKTEST_CACHE_DEFAULT = 'day'
@@ -63,6 +65,7 @@ USERPATH_FREQAIMODELS = 'freqaimodels'
 TELEGRAM_SETTING_OPTIONS = ['on', 'off', 'silent']
 WEBHOOK_FORMAT_OPTIONS = ['form', 'json', 'raw']
 FULL_DATAFRAME_THRESHOLD = 100
+CUSTOM_TAG_MAX_LENGTH = 255
 
 ENV_VAR_PREFIX = 'FREQTRADE__'
 
@@ -146,7 +149,6 @@ CONF_SCHEMA = {
             'patternProperties': {
                 '^[0-9.]+$': {'type': 'number'}
             },
-            'minProperties': 1
         },
         'amount_reserve_percent': {'type': 'number', 'minimum': 0.0, 'maximum': 0.5},
         'stoploss': {'type': 'number', 'maximum': 0, 'exclusiveMaximum': True, 'minimum': -1},
@@ -162,6 +164,9 @@ CONF_SCHEMA = {
         'trading_mode': {'type': 'string', 'enum': TRADING_MODES},
         'margin_mode': {'type': 'string', 'enum': MARGIN_MODES},
         'reduce_df_footprint': {'type': 'boolean', 'default': False},
+        'minimum_trade_amount': {'type': 'number', 'default': 10},
+        'targeted_trade_amount': {'type': 'number', 'default': 20},
+        'lookahead_analysis_exportfilename': {'type': 'string'},
         'liquidation_buffer': {'type': 'number', 'minimum': 0.0, 'maximum': 0.99},
         'backtest_breakdown': {
             'type': 'array',
@@ -546,7 +551,7 @@ CONF_SCHEMA = {
                 "enabled": {"type": "boolean", "default": False},
                 "keras": {"type": "boolean", "default": False},
                 "write_metrics_to_disk": {"type": "boolean", "default": False},
-                "purge_old_models": {"type": "boolean", "default": True},
+                "purge_old_models": {"type": ["boolean", "number"], "default": 2},
                 "conv_width": {"type": "integer", "default": 1},
                 "train_period_days": {"type": "integer", "default": 0},
                 "backtest_period_days": {"type": "number", "default": 7},
@@ -568,7 +573,9 @@ CONF_SCHEMA = {
                                            "shuffle": {"type": "boolean", "default": False},
                                            "nu": {"type": "number", "default": 0.1}
                                            },
-                                       }
+                                       },
+                        "shuffle_after_split": {"type": "boolean", "default": False},
+                        "buffer_train_data_candles": {"type": "integer", "default": 0}
                     },
                     "required": ["include_timeframes", "include_corr_pairlist", ]
                 },
@@ -586,6 +593,7 @@ CONF_SCHEMA = {
                 "rl_config": {
                     "type": "object",
                     "properties": {
+                        "drop_ohlc_from_features": {"type": "boolean", "default": False},
                         "train_cycles": {"type": "integer"},
                         "max_trade_duration_candles": {"type": "integer"},
                         "add_state_info": {"type": "boolean", "default": False},
@@ -594,7 +602,8 @@ CONF_SCHEMA = {
                         "model_type": {"type": "string", "default": "PPO"},
                         "policy_type": {"type": "string", "default": "MlpPolicy"},
                         "net_arch": {"type": "array", "default": [128, 128]},
-                        "randomize_startinng_position": {"type": "boolean", "default": False},
+                        "randomize_starting_position": {"type": "boolean", "default": False},
+                        "progress_bar": {"type": "boolean", "default": True},
                         "model_reward_parameters": {
                             "type": "object",
                             "properties": {
@@ -684,4 +693,6 @@ BidAsk = Literal['bid', 'ask']
 OBLiteral = Literal['asks', 'bids']
 
 Config = Dict[str, Any]
+# Exchange part of the configuration.
+ExchangeConfig = Dict[str, Any]
 IntOrInf = float
