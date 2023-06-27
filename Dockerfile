@@ -1,4 +1,6 @@
-FROM python:3-slim-bullseye as base
+
+FROM python:3.12.0a3-slim-bullseye as base
+
 # Setup env
 ENV LANG C.UTF-8
 ENV LC_ALL C.UTF-8
