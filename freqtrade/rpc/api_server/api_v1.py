@@ -12,7 +12,8 @@ from freqtrade.exceptions import OperationalException
 from freqtrade.rpc import RPC
 from freqtrade.rpc.api_server.api_schemas import (AvailablePairs, Balances, BlacklistPayload,
                                                   BlacklistResponse, Count, Daily,
-                                                  DeleteLockRequest, DeleteTrade, ForceEnterPayload,
+                                                  DeleteLockRequest, DeleteTrade,
+                                                  ExchangeListResponse, ForceEnterPayload,
                                                   ForceEnterResponse, ForceExitPayload,
                                                   FreqAIModelListResponse, Health, Locks, Logs,
                                                   OpenTradeSchema, PairHistory, PerformanceEntry,
@@ -44,7 +45,11 @@ logger = logging.getLogger(__name__)
 # 2.24: Add cancel_open_order endpoint
 # 2.25: Add several profit values to /status endpoint
 # 2.26: increase /balance output
-API_VERSION = 2.26
+# 2.27: Add /trades/<id>/reload endpoint
+# 2.28: Switch reload endpoint to Post
+# 2.29: Add /exchanges endpoint
+# 2.30: new /pairlists endpoint
+API_VERSION = 2.30
 
 # Public API, requires no auth.
 router_public = APIRouter()
@@ -127,8 +132,14 @@ def trades_delete(tradeid: int, rpc: RPC = Depends(get_rpc)):
 
 
 @router.delete('/trades/{tradeid}/open-order', response_model=OpenTradeSchema,  tags=['trading'])
-def cancel_open_order(tradeid: int, rpc: RPC = Depends(get_rpc)):
+def trade_cancel_open_order(tradeid: int, rpc: RPC = Depends(get_rpc)):
     rpc._rpc_cancel_open_order(tradeid)
+    return rpc._rpc_trade_status([tradeid])[0]
+
+
+@router.post('/trades/{tradeid}/reload', response_model=OpenTradeSchema,  tags=['trading'])
+def trade_reload(tradeid: int, rpc: RPC = Depends(get_rpc)):
+    rpc._rpc_reload_trade_from_exchange(tradeid)
     return rpc._rpc_trade_status([tradeid])[0]
 
 
@@ -247,14 +258,17 @@ def pair_candles(
 
 @router.get('/pair_history', response_model=PairHistory, tags=['candle data'])
 def pair_history(pair: str, timeframe: str, timerange: str, strategy: str,
+                 freqaimodel: Optional[str] = None,
                  config=Depends(get_config), exchange=Depends(get_exchange)):
     # The initial call to this endpoint can be slow, as it may need to initialize
     # the exchange class.
     config = deepcopy(config)
     config.update({
         'strategy': strategy,
+        'timerange': timerange,
+        'freqaimodel': freqaimodel if freqaimodel else config.get('freqaimodel'),
     })
-    return RPC._rpc_analysed_history_full(config, pair, timeframe, timerange, exchange)
+    return RPC._rpc_analysed_history_full(config, pair, timeframe, exchange)
 
 
 @router.get('/plot_config', response_model=PlotConfig, tags=['candle data'])
@@ -298,6 +312,15 @@ def get_strategy(strategy: str, config=Depends(get_config)):
     return {
         'strategy': strategy_obj.get_strategy_name(),
         'code': strategy_obj.__source__,
+    }
+
+
+@router.get('/exchanges', response_model=ExchangeListResponse, tags=[])
+def list_exchanges(config=Depends(get_config)):
+    from freqtrade.exchange import list_available_exchanges
+    exchanges = list_available_exchanges(config)
+    return {
+        'exchanges': exchanges,
     }
 
 

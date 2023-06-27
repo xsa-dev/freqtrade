@@ -19,7 +19,7 @@ from freqtrade.exchange import (ROUND_DOWN, ROUND_UP, amount_to_contract_precisi
                                 price_to_precision)
 from freqtrade.leverage import interest
 from freqtrade.persistence.base import ModelBase, SessionType
-from freqtrade.util import FtPrecise
+from freqtrade.util import FtPrecise, dt_now
 
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ class Order(ModelBase):
     remaining: Mapped[Optional[float]] = mapped_column(Float(), nullable=True)
     cost: Mapped[Optional[float]] = mapped_column(Float(), nullable=True)
     stop_price: Mapped[Optional[float]] = mapped_column(Float(), nullable=True)
-    order_date: Mapped[datetime] = mapped_column(nullable=True, default=datetime.utcnow)
+    order_date: Mapped[datetime] = mapped_column(nullable=True, default=dt_now)
     order_filled_date: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     order_update_date: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     funding_fee: Mapped[Optional[float]] = mapped_column(Float(), nullable=True)
@@ -97,7 +97,7 @@ class Order(ModelBase):
 
     @property
     def safe_filled(self) -> float:
-        return self.filled if self.filled is not None else self.amount or 0.0
+        return self.filled if self.filled is not None else 0.0
 
     @property
     def safe_cost(self) -> float:
@@ -425,7 +425,7 @@ class LocalTrade():
 
     @property
     def close_date_utc(self):
-        return self.close_date.replace(tzinfo=timezone.utc)
+        return self.close_date.replace(tzinfo=timezone.utc) if self.close_date else None
 
     @property
     def entry_side(self) -> str:
@@ -703,7 +703,7 @@ class LocalTrade():
             self.stoploss_order_id = None
             self.close_rate_requested = self.stop_loss
             self.exit_reason = ExitType.STOPLOSS_ON_EXCHANGE.value
-            if self.is_open:
+            if self.is_open and order.safe_filled > 0:
                 logger.info(f'{order.order_type.upper()} is hit for {self}.')
         else:
             raise ValueError(f'Unknown order type: {order.order_type}')
@@ -1391,7 +1391,10 @@ class Trade(ModelBase, LocalTrade):
                              e.g. `(trade_filter=Trade.id == trade_id)`
         :return: unsorted query object
         """
-        return Trade.session.scalars(Trade.get_trades_query(trade_filter, include_orders))
+        query = Trade.get_trades_query(trade_filter, include_orders)
+        # this sholud remain split. if use_db is False, session is not available and the above will
+        # raise an exception.
+        return Trade.session.scalars(query)
 
     @staticmethod
     def get_open_order_trades() -> List['Trade']:
