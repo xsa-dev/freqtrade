@@ -10,3 +10,4 @@ lightgbm==4.1.0
 xgboost==2.0.0
 tensorboard==2.14.0
 datasieve==0.1.7
+pillow>=10.0.1 # not directly required, pinned by Snyk to avoid a vulnerability
