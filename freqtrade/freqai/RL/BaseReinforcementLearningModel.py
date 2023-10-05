@@ -72,6 +72,11 @@ class BaseReinforcementLearningModel(IFreqaiModel):
         self.tensorboard_callback: TensorboardCallback = \
             TensorboardCallback(verbose=1, actions=BaseActions)
 
+        if torch.cuda.is_available():
+            print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        else:
+            print("GPU is not available, using CPU instead")
+
     def unset_outlier_removal(self):
         """
         If user has activated any function that may remove training points, this

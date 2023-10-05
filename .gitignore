@@ -112,3 +112,7 @@ target/
 !config_examples/config_full.example.json
 !config_examples/config_kraken.example.json
 !config_examples/config_freqai.example.json
+docs/bcp/user_data/backtest_results/*
+docs/bcp/user_data/data/*
+docs/bcp/user_data/logs/*
+docs/bcp/*
