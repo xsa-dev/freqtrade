@@ -1,4 +1,4 @@
-""" Huobi exchange subclass """
+""" HTX exchange subclass """
 import logging
 from typing import Dict
 
@@ -9,14 +9,16 @@ from freqtrade.exchange import Exchange
 logger = logging.getLogger(__name__)
 
 
-class Huobi(Exchange):
+class Htx(Exchange):
     """
-    Huobi exchange class. Contains adjustments needed for Freqtrade to work
+    HTX exchange class. Contains adjustments needed for Freqtrade to work
     with this exchange.
     """
 
     _ft_has: Dict = {
         "stoploss_on_exchange": True,
+        "stop_price_param": "stopPrice",
+        "stop_price_prop": "stopPrice",
         "stoploss_order_types": {"limit": "stop-limit"},
         "ohlcv_candle_limit": 1000,
         "l2_limit_range": [5, 10, 20],

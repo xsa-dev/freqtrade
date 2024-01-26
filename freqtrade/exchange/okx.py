@@ -29,7 +29,6 @@ class Okx(Exchange):
         "funding_fee_timeframe": "8h",
         "stoploss_order_types": {"limit": "limit"},
         "stoploss_on_exchange": True,
-        "stop_price_param": "stopLossPrice",
     }
     _ft_has_futures: Dict = {
         "tickers_have_quoteVolume": False,
@@ -229,7 +228,7 @@ class Okx(Exchange):
                 f'StoplossOrder not found (pair: {pair} id: {order_id}).')
 
     def get_order_id_conditional(self, order: Dict[str, Any]) -> str:
-        if order['type'] == 'stop':
+        if order.get('type', '') == 'stop':
             return safe_value_fallback2(order, order, 'id_stop', 'id')
         return order['id']
 
