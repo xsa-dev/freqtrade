@@ -6,7 +6,6 @@ from freqtrade.exchange.exchange import Exchange
 from freqtrade.exchange.binance import Binance
 from freqtrade.exchange.bitmart import Bitmart
 from freqtrade.exchange.bitpanda import Bitpanda
-from freqtrade.exchange.bittrex import Bittrex
 from freqtrade.exchange.bitvavo import Bitvavo
 from freqtrade.exchange.bybit import Bybit
 from freqtrade.exchange.coinbasepro import Coinbasepro
@@ -21,7 +20,7 @@ from freqtrade.exchange.exchange_utils import (ROUND_DOWN, ROUND_UP, amount_to_c
                                                timeframe_to_seconds, validate_exchange)
 from freqtrade.exchange.gate import Gate
 from freqtrade.exchange.hitbtc import Hitbtc
-from freqtrade.exchange.huobi import Huobi
+from freqtrade.exchange.htx import Htx
 from freqtrade.exchange.kraken import Kraken
 from freqtrade.exchange.kucoin import Kucoin
 from freqtrade.exchange.okx import Okx
