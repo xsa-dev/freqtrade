@@ -156,9 +156,9 @@ def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame
 
 Out of the box, freqtrade installs the following technical libraries:
 
-* [ta-lib](http://mrjbq7.github.io/ta-lib/)
-* [pandas-ta](https://twopirllc.github.io/pandas-ta/)
-* [technical](https://github.com/freqtrade/technical/)
+- [ta-lib](https://ta-lib.github.io/ta-lib-python/)
+- [pandas-ta](https://twopirllc.github.io/pandas-ta/)
+- [technical](https://github.com/freqtrade/technical/)
 
 Additional technical libraries can be installed as necessary, or custom indicators may be written / invented by the strategy author.
 
@@ -173,7 +173,7 @@ You can use [recursive-analysis](recursive-analysis.md) to check and find the co
 In this example strategy, this should be set to 400 (`startup_candle_count = 400`), since the minimum needed history for ema100 calculation to make sure the value is correct is 400 candles.
 
 ``` python
-    dataframe['ema100'] = ta.EMA(dataframe, timeperiod=400)
+    dataframe['ema100'] = ta.EMA(dataframe, timeperiod=100)
 ```
 
 By letting the bot know how much history is needed, backtest trades can start at the specified timerange during backtesting and hyperopt.
@@ -367,6 +367,11 @@ class AwesomeStrategy(IStrategy):
     }
 ```
 
+??? info "Orders that don't fill immediately"
+    `minimal_roi` will take the `trade.open_date` as reference, which is the time the trade was initialized / the first order for this trade was placed.  
+    This will also hold true for limit orders that don't fill immediately  (usually in combination with "off-spot" prices through `custom_entry_price()`), as well as for cases where the initial order is replaced through `adjust_entry_price()`.
+    The time used will still be from the initial `trade.open_date` (when the initial order was first placed), not from the newly placed order date.
+
 ### Stoploss
 
 Setting a stoploss is highly recommended to protect your capital from strong moves against you.
@@ -486,17 +491,18 @@ for more information.
 
         :param timeframe: Informative timeframe. Must always be equal or higher than strategy timeframe.
         :param asset: Informative asset, for example BTC, BTC/USDT, ETH/BTC. Do not specify to use
-        current pair.
+                    current pair. Also supports limited pair format strings (see below)
         :param fmt: Column format (str) or column formatter (callable(name, asset, timeframe)). When not
         specified, defaults to:
-        * {base}_{quote}_{column}_{timeframe} if asset is specified. 
+        * {base}_{quote}_{column}_{timeframe} if asset is specified.
         * {column}_{timeframe} if asset is not specified.
-        Format string supports these format variables:
-        * {asset} - full name of the asset, for example 'BTC/USDT'.
+        Pair format supports these format variables:
         * {base} - base currency in lower case, for example 'eth'.
         * {BASE} - same as {base}, except in upper case.
         * {quote} - quote currency in lower case, for example 'usdt'.
         * {QUOTE} - same as {quote}, except in upper case.
+        Format string additionally supports this variables.
+        * {asset} - full name of the asset, for example 'BTC/USDT'.
         * {column} - name of dataframe column.
         * {timeframe} - timeframe of informative dataframe.
         :param ffill: ffill dataframe after merging informative pair.
@@ -1007,6 +1013,10 @@ The following lists some common patterns which should be avoided to prevent frus
 - don't use `.iloc[-1]` or any other absolute position in the dataframe, this will be different between dry-run and backtesting.
 - don't use `dataframe['volume'].mean()`. This uses the full DataFrame for backtesting, including data from the future. Use `dataframe['volume'].rolling(<window>).mean()` instead
 - don't use `.resample('1h')`. This uses the left border of the interval, so moves data from an hour to the start of the hour. Use `.resample('1h', label='right')` instead.
+
+!!! Tip "Identifying problems"
+    You may also want to check the 2 helper commands [lookahead-analysis](lookahead-analysis.md) and [recursive-analysis](recursive-analysis.md), which can each help you figure out problems with your strategy in different ways.
+    Please treat them as what they are - helpers to identify most common problems. A negative result of each does not guarantee that there's none of the above errors included.
 
 ### Colliding signals
 
