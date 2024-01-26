@@ -34,6 +34,7 @@ class Webhook(RPCHandler):
         self._format = self._config['webhook'].get('format', 'form')
         self._retries = self._config['webhook'].get('retries', 0)
         self._retry_delay = self._config['webhook'].get('retry_delay', 0.1)
+        self._timeout = self._config['webhook'].get('timeout', 10)
 
     def cleanup(self) -> None:
         """
@@ -83,7 +84,7 @@ class Webhook(RPCHandler):
             valuedict = self._get_value_dict(msg)
 
             if not valuedict:
-                logger.info("Message type '%s' not configured for webhooks", msg['type'])
+                logger.debug("Message type '%s' not configured for webhooks", msg['type'])
                 return
 
             payload = {key: value.format(**msg) for (key, value) in valuedict.items()}
@@ -107,12 +108,13 @@ class Webhook(RPCHandler):
 
             try:
                 if self._format == 'form':
-                    response = post(self._url, data=payload)
+                    response = post(self._url, data=payload, timeout=self._timeout)
                 elif self._format == 'json':
-                    response = post(self._url, json=payload)
+                    response = post(self._url, json=payload, timeout=self._timeout)
                 elif self._format == 'raw':
                     response = post(self._url, data=payload['data'],
-                                    headers={'Content-Type': 'text/plain'})
+                                    headers={'Content-Type': 'text/plain'},
+                                    timeout=self._timeout)
                 else:
                     raise NotImplementedError(f'Unknown format: {self._format}')
 

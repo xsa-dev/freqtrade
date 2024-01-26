@@ -15,8 +15,9 @@ from pandas import DataFrame
 
 from freqtrade import misc
 from freqtrade.configuration import TimeRange
-from freqtrade.constants import ListPairsWithTimeframes, TradeList
-from freqtrade.data.converter import clean_ohlcv_dataframe, trades_remove_duplicates, trim_dataframe
+from freqtrade.constants import DEFAULT_TRADES_COLUMNS, ListPairsWithTimeframes
+from freqtrade.data.converter import (clean_ohlcv_dataframe, trades_convert_types,
+                                      trades_df_remove_duplicates, trim_dataframe)
 from freqtrade.enums import CandleType, TradingMode
 from freqtrade.exchange import timeframe_to_seconds
 
@@ -170,31 +171,41 @@ class IDataHandler(ABC):
         return [cls.rebuild_pair_from_filename(match[0]) for match in _tmp if match]
 
     @abstractmethod
-    def trades_store(self, pair: str, data: TradeList) -> None:
+    def _trades_store(self, pair: str, data: DataFrame) -> None:
         """
         Store trades data (list of Dicts) to file
         :param pair: Pair - used for filename
-        :param data: List of Lists containing trade data,
+        :param data: Dataframe containing trades
                      column sequence as in DEFAULT_TRADES_COLUMNS
         """
 
     @abstractmethod
-    def trades_append(self, pair: str, data: TradeList):
+    def trades_append(self, pair: str, data: DataFrame):
         """
         Append data to existing files
         :param pair: Pair - used for filename
-        :param data: List of Lists containing trade data,
+        :param data: Dataframe containing trades
                      column sequence as in DEFAULT_TRADES_COLUMNS
         """
 
     @abstractmethod
-    def _trades_load(self, pair: str, timerange: Optional[TimeRange] = None) -> TradeList:
+    def _trades_load(self, pair: str, timerange: Optional[TimeRange] = None) -> DataFrame:
         """
         Load a pair from file, either .json.gz or .json
         :param pair: Load trades for this pair
         :param timerange: Timerange to load trades for - currently not implemented
-        :return: List of trades
+        :return: Dataframe containing trades
         """
+
+    def trades_store(self, pair: str, data: DataFrame) -> None:
+        """
+        Store trades data (list of Dicts) to file
+        :param pair: Pair - used for filename
+        :param data: Dataframe containing trades
+                     column sequence as in DEFAULT_TRADES_COLUMNS
+        """
+        # Filter on expected columns (will remove the actual date column).
+        self._trades_store(pair, data[DEFAULT_TRADES_COLUMNS])
 
     def trades_purge(self, pair: str) -> bool:
         """
@@ -208,7 +219,7 @@ class IDataHandler(ABC):
             return True
         return False
 
-    def trades_load(self, pair: str, timerange: Optional[TimeRange] = None) -> TradeList:
+    def trades_load(self, pair: str, timerange: Optional[TimeRange] = None) -> DataFrame:
         """
         Load a pair from file, either .json.gz or .json
         Removes duplicates in the process.
@@ -216,7 +227,10 @@ class IDataHandler(ABC):
         :param timerange: Timerange to load trades for - currently not implemented
         :return: List of trades
         """
-        return trades_remove_duplicates(self._trades_load(pair, timerange=timerange))
+        trades = trades_df_remove_duplicates(self._trades_load(pair, timerange=timerange))
+
+        trades = trades_convert_types(trades)
+        return trades
 
     @classmethod
     def create_dir_if_needed(cls, datadir: Path):
@@ -389,6 +403,34 @@ class IDataHandler(ABC):
             return
         file_old.rename(file_new)
 
+    def fix_funding_fee_timeframe(self, ff_timeframe: str):
+        """
+        Temporary method to migrate data from old funding fee timeframe to the correct timeframe
+        Applies to bybit and okx, where funding-fee and mark candles have different timeframes.
+        """
+        paircombs = self.ohlcv_get_available_data(self._datadir, TradingMode.FUTURES)
+        funding_rate_combs = [
+            f for f in paircombs if f[2] == CandleType.FUNDING_RATE and f[1] != ff_timeframe
+        ]
+
+        if funding_rate_combs:
+            logger.warning(
+                f'Migrating {len(funding_rate_combs)} funding fees to correct timeframe.')
+
+        for pair, timeframe, candletype in funding_rate_combs:
+            old_name = self._pair_data_filename(self._datadir, pair, timeframe, candletype)
+            new_name = self._pair_data_filename(self._datadir, pair, ff_timeframe, candletype)
+
+            if not Path(old_name).exists():
+                logger.warning(f'{old_name} does not exist, skipping.')
+                continue
+
+            if Path(new_name).exists():
+                logger.warning(f'{new_name} already exists, Removing.')
+                Path(new_name).unlink()
+
+            Path(old_name).rename(new_name)
+
 
 def get_datahandlerclass(datatype: str) -> Type[IDataHandler]:
     """
@@ -427,6 +469,6 @@ def get_datahandler(datadir: Path, data_format: Optional[str] = None,
     """
 
     if not data_handler:
-        HandlerClass = get_datahandlerclass(data_format or 'json')
+        HandlerClass = get_datahandlerclass(data_format or 'feather')
         data_handler = HandlerClass(datadir)
     return data_handler

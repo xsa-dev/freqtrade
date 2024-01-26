@@ -11,10 +11,11 @@ from unittest.mock import MagicMock, Mock, PropertyMock
 import numpy as np
 import pandas as pd
 import pytest
+from xdist.scheduler.loadscope import LoadScopeScheduling
 
 from freqtrade import constants
 from freqtrade.commands import Arguments
-from freqtrade.data.converter import ohlcv_to_dataframe
+from freqtrade.data.converter import ohlcv_to_dataframe, trades_list_to_df
 from freqtrade.edge import PairInfo
 from freqtrade.enums import CandleType, MarginMode, RunMode, SignalDirection, TradingMode
 from freqtrade.exchange import Exchange
@@ -56,6 +57,27 @@ def pytest_configure(config):
         setattr(config.option, 'markexpr', 'not longrun')
 
 
+class FixtureScheduler(LoadScopeScheduling):
+    # Based on the suggestion in
+    # https://github.com/pytest-dev/pytest-xdist/issues/18
+
+    def _split_scope(self, nodeid):
+        if 'exchange_online' in nodeid:
+            try:
+                # Extract exchange ID from nodeid
+                exchange_id = nodeid.split('[')[1].split('-')[0].rstrip(']')
+                return exchange_id
+            except Exception as e:
+                print(e)
+                pass
+
+        return nodeid
+
+
+def pytest_xdist_make_scheduler(config, log):
+    return FixtureScheduler(config, log)
+
+
 def log_has(line, logs):
     """Check if line is found on some caplog's message."""
     return any(line == message for message in logs.messages)
@@ -87,11 +109,15 @@ def get_args(args):
 
 def generate_test_data(timeframe: str, size: int, start: str = '2020-07-05'):
     np.random.seed(42)
-    tf_mins = timeframe_to_minutes(timeframe)
 
     base = np.random.normal(20, 2, size=size)
-
-    date = pd.date_range(start, periods=size, freq=f'{tf_mins}min', tz='UTC')
+    if timeframe == '1M':
+        date = pd.date_range(start, periods=size, freq='1MS', tz='UTC')
+    elif timeframe == '1w':
+        date = pd.date_range(start, periods=size, freq='1W-MON', tz='UTC')
+    else:
+        tf_mins = timeframe_to_minutes(timeframe)
+        date = pd.date_range(start, periods=size, freq=f'{tf_mins}min', tz='UTC')
     df = pd.DataFrame({
         'date': date,
         'open': base,
@@ -413,8 +439,8 @@ def patch_gc(mocker) -> None:
 
 
 @pytest.fixture(autouse=True)
-def user_dir(mocker, tmpdir) -> Path:
-    user_dir = Path(tmpdir) / "user_data"
+def user_dir(mocker, tmp_path) -> Path:
+    user_dir = tmp_path / "user_data"
     mocker.patch('freqtrade.configuration.configuration.create_userdata_dir',
                  return_value=user_dir)
     return user_dir
@@ -526,6 +552,8 @@ def get_default_conf(testdatadir):
         "disableparamexport": True,
         "internals": {},
         "export": "none",
+        "dataformat_ohlcv": "feather",
+        "runmode": "dry_run",
         "candle_type_def": CandleType.SPOT,
     }
     return configuration
@@ -2345,7 +2373,15 @@ def trades_history():
             [1565798399629, '1261813bb30', None, 'buy', 0.019627, 0.244, 0.004788987999999999],
             [1565798399752, '1261813cc31', None, 'sell', 0.019626, 0.011, 0.00021588599999999999],
             [1565798399862, '126181cc332', None, 'sell', 0.019626, 0.011, 0.00021588599999999999],
-            [1565798399872, '1261aa81333', None, 'sell', 0.019626, 0.011, 0.00021588599999999999]]
+            [1565798399862, '126181cc333', None, 'sell', 0.019626, 0.012, 0.00021588599999999999],
+            [1565798399872, '1261aa81334', None, 'sell', 0.019626, 0.011, 0.00021588599999999999]]
+
+
+@pytest.fixture(scope="function")
+def trades_history_df(trades_history):
+    trades = trades_list_to_df(trades_history)
+    trades['date'] = pd.to_datetime(trades['timestamp'], unit='ms', utc=True)
+    return trades
 
 
 @pytest.fixture(scope="function")
@@ -2592,7 +2628,6 @@ def open_trade():
         pair='ETH/BTC',
         open_rate=0.00001099,
         exchange='binance',
-        open_order_id='123456789',
         amount=90.99181073,
         fee_open=0.0,
         fee_close=0.0,
@@ -2604,7 +2639,7 @@ def open_trade():
         Order(
             ft_order_side='buy',
             ft_pair=trade.pair,
-            ft_is_open=False,
+            ft_is_open=True,
             ft_amount=trade.amount,
             ft_price=trade.open_rate,
             order_id='123456789',
@@ -2630,7 +2665,6 @@ def open_trade_usdt():
         pair='ADA/USDT',
         open_rate=2.0,
         exchange='binance',
-        open_order_id='123456789_exit',
         amount=30.0,
         fee_open=0.0,
         fee_close=0.0,
@@ -3001,85 +3035,85 @@ def mark_ohlcv():
 def funding_rate_history_hourly():
     return [
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": -0.000008,
             "timestamp": 1630454400000,
             "datetime": "2021-09-01T00:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": -0.000004,
             "timestamp": 1630458000000,
             "datetime": "2021-09-01T01:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": 0.000012,
             "timestamp": 1630461600000,
             "datetime": "2021-09-01T02:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": -0.000003,
             "timestamp": 1630465200000,
             "datetime": "2021-09-01T03:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": -0.000007,
             "timestamp": 1630468800000,
             "datetime": "2021-09-01T04:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": 0.000003,
             "timestamp": 1630472400000,
             "datetime": "2021-09-01T05:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": 0.000019,
             "timestamp": 1630476000000,
             "datetime": "2021-09-01T06:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": 0.000003,
             "timestamp": 1630479600000,
             "datetime": "2021-09-01T07:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": -0.000003,
             "timestamp": 1630483200000,
             "datetime": "2021-09-01T08:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": 0,
             "timestamp": 1630486800000,
             "datetime": "2021-09-01T09:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": 0.000013,
             "timestamp": 1630490400000,
             "datetime": "2021-09-01T10:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": 0.000077,
             "timestamp": 1630494000000,
             "datetime": "2021-09-01T11:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": 0.000072,
             "timestamp": 1630497600000,
             "datetime": "2021-09-01T12:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": 0.000097,
             "timestamp": 1630501200000,
             "datetime": "2021-09-01T13:00:00.000Z"
@@ -3091,13 +3125,13 @@ def funding_rate_history_hourly():
 def funding_rate_history_octohourly():
     return [
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": -0.000008,
             "timestamp": 1630454400000,
             "datetime": "2021-09-01T00:00:00.000Z"
         },
         {
-            "symbol": "ADA/USDT",
+            "symbol": "ADA/USDT:USDT",
             "fundingRate": -0.000003,
             "timestamp": 1630483200000,
             "datetime": "2021-09-01T08:00:00.000Z"

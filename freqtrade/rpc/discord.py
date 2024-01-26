@@ -15,11 +15,13 @@ class Discord(Webhook):
         self.rpc = rpc
         self.strategy = config.get('strategy', '')
         self.timeframe = config.get('timeframe', '')
+        self.bot_name = config.get('bot_name', '')
 
         self._url = config['discord']['webhook_url']
         self._format = 'json'
         self._retries = 1
         self._retry_delay = 0.1
+        self._timeout = self._config['discord'].get('timeout', 10)
 
     def cleanup(self) -> None:
         """
@@ -30,12 +32,12 @@ class Discord(Webhook):
 
     def send_msg(self, msg) -> None:
 
-        if msg['type'].value in self._config['discord']:
+        if (fields := self._config['discord'].get(msg['type'].value)):
             logger.info(f"Sending discord message: {msg}")
 
             msg['strategy'] = self.strategy
             msg['timeframe'] = self.timeframe
-            fields = self._config['discord'].get(msg['type'].value)
+            msg['bot_name'] = self.bot_name
             color = 0x0000FF
             if msg['type'] in (RPCMessageType.EXIT, RPCMessageType.EXIT_FILL):
                 profit_ratio = msg.get('profit_ratio')

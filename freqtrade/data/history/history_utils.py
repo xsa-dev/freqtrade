@@ -7,16 +7,19 @@ from typing import Dict, List, Optional, Tuple
 from pandas import DataFrame, concat
 
 from freqtrade.configuration import TimeRange
-from freqtrade.constants import DATETIME_PRINT_FORMAT, DEFAULT_DATAFRAME_COLUMNS, Config
-from freqtrade.data.converter import (clean_ohlcv_dataframe, ohlcv_to_dataframe,
-                                      trades_remove_duplicates, trades_to_ohlcv)
+from freqtrade.constants import (DATETIME_PRINT_FORMAT, DEFAULT_DATAFRAME_COLUMNS,
+                                 DL_DATA_TIMEFRAMES, DOCS_LINK, Config)
+from freqtrade.data.converter import (clean_ohlcv_dataframe, convert_trades_to_ohlcv,
+                                      ohlcv_to_dataframe, trades_df_remove_duplicates,
+                                      trades_list_to_df)
 from freqtrade.data.history.idatahandler import IDataHandler, get_datahandler
 from freqtrade.enums import CandleType
 from freqtrade.exceptions import OperationalException
 from freqtrade.exchange import Exchange
-from freqtrade.misc import format_ms_time
 from freqtrade.plugins.pairlist.pairlist_helpers import dynamic_expand_pairlist
-from freqtrade.util.binance_mig import migrate_binance_futures_data
+from freqtrade.util import dt_ts, format_ms_time
+from freqtrade.util.datetime_helpers import dt_now
+from freqtrade.util.migrations import migrate_data
 
 
 logger = logging.getLogger(__name__)
@@ -68,7 +71,7 @@ def load_data(datadir: Path,
               fill_up_missing: bool = True,
               startup_candles: int = 0,
               fail_without_data: bool = False,
-              data_format: str = 'json',
+              data_format: str = 'feather',
               candle_type: CandleType = CandleType.SPOT,
               user_futures_funding_rate: Optional[int] = None,
               ) -> Dict[str, DataFrame]:
@@ -308,15 +311,19 @@ def refresh_backtest_ohlcv_data(exchange: Exchange, pairs: List[str], timeframes
             # Predefined candletype (and timeframe) depending on exchange
             # Downloads what is necessary to backtest based on futures data.
             tf_mark = exchange.get_option('mark_ohlcv_timeframe')
+            tf_funding_rate = exchange.get_option('funding_fee_timeframe')
+
             fr_candle_type = CandleType.from_string(exchange.get_option('mark_ohlcv_price'))
             # All exchanges need FundingRate for futures trading.
             # The timeframe is aligned to the mark-price timeframe.
-            for funding_candle_type in (CandleType.FUNDING_RATE, fr_candle_type):
+            combs = ((CandleType.FUNDING_RATE, tf_funding_rate), (fr_candle_type, tf_mark))
+            for candle_type_f, tf in combs:
+                logger.debug(f'Downloading pair {pair}, {candle_type_f}, interval {tf}.')
                 _download_pair_history(pair=pair, process=process,
                                        datadir=datadir, exchange=exchange,
                                        timerange=timerange, data_handler=data_handler,
-                                       timeframe=str(tf_mark), new_pairs_days=new_pairs_days,
-                                       candle_type=funding_candle_type,
+                                       timeframe=str(tf), new_pairs_days=new_pairs_days,
+                                       candle_type=candle_type_f,
                                        erase=erase, prepend=prepend)
 
     return pairs_not_available
@@ -348,24 +355,27 @@ def _download_trades_history(exchange: Exchange,
         # DEFAULT_TRADES_COLUMNS: 0 -> timestamp
         # DEFAULT_TRADES_COLUMNS: 1 -> id
 
-        if trades and since < trades[0][0]:
+        if not trades.empty and since > 0 and since < trades.iloc[0]['timestamp']:
             # since is before the first trade
-            logger.info(f"Start earlier than available data. Redownloading trades for {pair}...")
-            trades = []
+            logger.info(f"Start ({trades.iloc[0]['date']:{DATETIME_PRINT_FORMAT}}) earlier than "
+                        f"available data. Redownloading trades for {pair}...")
+            trades = trades_list_to_df([])
 
-        if not since:
-            since = int((datetime.now() - timedelta(days=-new_pairs_days)).timestamp()) * 1000
-
-        from_id = trades[-1][1] if trades else None
-        if trades and since < trades[-1][0]:
+        from_id = trades.iloc[-1]['id'] if not trades.empty else None
+        if not trades.empty and since < trades.iloc[-1]['timestamp']:
             # Reset since to the last available point
             # - 5 seconds (to ensure we're getting all trades)
-            since = trades[-1][0] - (5 * 1000)
+            since = trades.iloc[-1]['timestamp'] - (5 * 1000)
             logger.info(f"Using last trade date -5s - Downloading trades for {pair} "
                         f"since: {format_ms_time(since)}.")
 
-        logger.debug(f"Current Start: {format_ms_time(trades[0][0]) if trades else 'None'}")
-        logger.debug(f"Current End: {format_ms_time(trades[-1][0]) if trades else 'None'}")
+        if not since:
+            since = dt_ts(dt_now() - timedelta(days=new_pairs_days))
+
+        logger.debug("Current Start: %s", 'None' if trades.empty else
+                     f"{trades.iloc[0]['date']:{DATETIME_PRINT_FORMAT}}")
+        logger.debug("Current End: %s", 'None' if trades.empty else
+                     f"{trades.iloc[-1]['date']:{DATETIME_PRINT_FORMAT}}")
         logger.info(f"Current Amount of trades: {len(trades)}")
 
         # Default since_ms to 30 days if nothing is given
@@ -374,13 +384,16 @@ def _download_trades_history(exchange: Exchange,
                                                   until=until,
                                                   from_id=from_id,
                                                   )
-        trades.extend(new_trades[1])
+        new_trades_df = trades_list_to_df(new_trades[1])
+        trades = concat([trades, new_trades_df], axis=0)
         # Remove duplicates to make sure we're not storing data we don't need
-        trades = trades_remove_duplicates(trades)
+        trades = trades_df_remove_duplicates(trades)
         data_handler.trades_store(pair, data=trades)
 
-        logger.debug(f"New Start: {format_ms_time(trades[0][0])}")
-        logger.debug(f"New End: {format_ms_time(trades[-1][0])}")
+        logger.debug("New Start: %s", 'None' if trades.empty else
+                     f"{trades.iloc[0]['date']:{DATETIME_PRINT_FORMAT}}")
+        logger.debug("New End: %s", 'None' if trades.empty else
+                     f"{trades.iloc[-1]['date']:{DATETIME_PRINT_FORMAT}}")
         logger.info(f"New Amount of trades: {len(trades)}")
         return True
 
@@ -393,7 +406,7 @@ def _download_trades_history(exchange: Exchange,
 
 def refresh_backtest_trades_data(exchange: Exchange, pairs: List[str], datadir: Path,
                                  timerange: TimeRange, new_pairs_days: int = 30,
-                                 erase: bool = False, data_format: str = 'jsongz') -> List[str]:
+                                 erase: bool = False, data_format: str = 'feather') -> List[str]:
     """
     Refresh stored trades data for backtesting and hyperopt operations.
     Used by freqtrade download-data subcommand.
@@ -418,36 +431,6 @@ def refresh_backtest_trades_data(exchange: Exchange, pairs: List[str], datadir: 
                                  timerange=timerange,
                                  data_handler=data_handler)
     return pairs_not_available
-
-
-def convert_trades_to_ohlcv(
-    pairs: List[str],
-    timeframes: List[str],
-    datadir: Path,
-    timerange: TimeRange,
-    erase: bool = False,
-    data_format_ohlcv: str = 'json',
-    data_format_trades: str = 'jsongz',
-    candle_type: CandleType = CandleType.SPOT
-) -> None:
-    """
-    Convert stored trades data to ohlcv data
-    """
-    data_handler_trades = get_datahandler(datadir, data_format=data_format_trades)
-    data_handler_ohlcv = get_datahandler(datadir, data_format=data_format_ohlcv)
-
-    for pair in pairs:
-        trades = data_handler_trades.trades_load(pair)
-        for timeframe in timeframes:
-            if erase:
-                if data_handler_ohlcv.ohlcv_purge(pair, timeframe, candle_type=candle_type):
-                    logger.info(f'Deleting existing data for pair {pair}, interval {timeframe}.')
-            try:
-                ohlcv = trades_to_ohlcv(trades, timeframe)
-                # Store ohlcv
-                data_handler_ohlcv.ohlcv_store(pair, timeframe, data=ohlcv, candle_type=candle_type)
-            except ValueError:
-                logger.exception(f'Could not convert {pair} to OHLCV.')
 
 
 def get_timerange(data: Dict[str, DataFrame]) -> Tuple[datetime, datetime]:
@@ -512,12 +495,20 @@ def download_data_main(config: Config) -> None:
     ]
 
     expanded_pairs = dynamic_expand_pairlist(config, available_pairs)
+    if 'timeframes' not in config:
+        config['timeframes'] = DL_DATA_TIMEFRAMES
 
     # Manual validations of relevant settings
     if not config['exchange'].get('skip_pair_validation', False):
         exchange.validate_pairs(expanded_pairs)
     logger.info(f"About to download pairs: {expanded_pairs}, "
                 f"intervals: {config['timeframes']} to {config['datadir']}")
+
+    if len(expanded_pairs) == 0:
+        logger.warning(
+            "No pairs available for download. "
+            "Please make sure you're using the correct Pair naming for your selected trade mode. \n"
+            f"More info: {DOCS_LINK}/bot-basics/#pair-naming")
 
     for timeframe in config['timeframes']:
         exchange.validate_timeframes(timeframe)
@@ -546,7 +537,7 @@ def download_data_main(config: Config) -> None:
                     "Please use `--dl-trades` instead for this exchange "
                     "(will unfortunately take a long time)."
                     )
-            migrate_binance_futures_data(config)
+            migrate_data(config, exchange)
             pairs_not_available = refresh_backtest_ohlcv_data(
                 exchange, pairs=expanded_pairs, timeframes=config['timeframes'],
                 datadir=config['datadir'], timerange=timerange,
