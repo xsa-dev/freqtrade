@@ -9,7 +9,7 @@ from sqlalchemy import select
 from freqtrade.edge import PairInfo
 from freqtrade.enums import SignalDirection, State, TradingMode
 from freqtrade.exceptions import ExchangeError, InvalidOrderException, TemporaryError
-from freqtrade.persistence import Trade
+from freqtrade.persistence import Order, Trade
 from freqtrade.persistence.pairlock_middleware import PairLocks
 from freqtrade.rpc import RPC, RPCException
 from freqtrade.rpc.fiat_convert import CryptoToFiatConverter
@@ -90,6 +90,7 @@ def test_rpc_trade_status(default_conf, ticker, fee, mocker) -> None:
         'amount_precision': 8.0,
         'price_precision': 8.0,
         'precision_mode': 2,
+        'contract_size': 1,
         'has_open_orders': False,
         'orders': [{
             'amount': 91.07468123, 'average': 1.098e-05, 'safe_price': 1.098e-05,
@@ -98,6 +99,7 @@ def test_rpc_trade_status(default_conf, ticker, fee, mocker) -> None:
             'order_filled_timestamp': ANY, 'order_type': 'limit', 'price': 1.098e-05,
             'is_open': False, 'pair': 'ETH/BTC', 'order_id': ANY,
             'remaining': ANY, 'status': ANY, 'ft_is_entry': True, 'ft_fee_base': None,
+            'funding_fee': ANY,
         }],
     }
     mocker.patch('freqtrade.rpc.telegram.Telegram', MagicMock())
@@ -263,7 +265,11 @@ def test_rpc_status_table(default_conf, ticker, fee, mocker) -> None:
     assert isnan(fiat_profit_sum)
 
 
-def test__rpc_timeunit_profit(default_conf_usdt, ticker, fee, markets, mocker) -> None:
+def test__rpc_timeunit_profit(
+        default_conf_usdt, ticker, fee, markets, mocker, time_machine) -> None:
+
+    time_machine.move_to("2023-09-05 10:00:00 +00:00", tick=False)
+
     mocker.patch('freqtrade.rpc.telegram.Telegram', MagicMock())
     mocker.patch.multiple(
         EXMS,
@@ -349,8 +355,18 @@ def test_rpc_delete_trade(mocker, default_conf, fee, markets, caplog, is_short):
         rpc._rpc_delete('200')
 
     trades = Trade.session.scalars(select(Trade)).all()
-    trades[1].stoploss_order_id = '1234'
-    trades[2].stoploss_order_id = '1234'
+    trades[2].stoploss_order_id = '102'
+    trades[2].orders.append(
+        Order(
+            ft_order_side='stoploss',
+            ft_pair=trades[2].pair,
+            ft_is_open=True,
+            ft_amount=trades[2].amount,
+            ft_price=trades[2].stop_loss,
+            order_id='102',
+            status='open',
+        )
+    )
     assert len(trades) > 2
 
     res = rpc._rpc_delete('1')
@@ -363,7 +379,7 @@ def test_rpc_delete_trade(mocker, default_conf, fee, markets, caplog, is_short):
     cancel_mock.reset_mock()
     stoploss_mock.reset_mock()
 
-    res = rpc._rpc_delete('2')
+    res = rpc._rpc_delete('5')
     assert isinstance(res, dict)
     assert stoploss_mock.call_count == 1
     assert res['cancel_order_count'] == 1

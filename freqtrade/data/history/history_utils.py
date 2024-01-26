@@ -8,18 +8,18 @@ from pandas import DataFrame, concat
 
 from freqtrade.configuration import TimeRange
 from freqtrade.constants import (DATETIME_PRINT_FORMAT, DEFAULT_DATAFRAME_COLUMNS,
-                                 DL_DATA_TIMEFRAMES, Config)
-from freqtrade.data.converter import (clean_ohlcv_dataframe, ohlcv_to_dataframe,
-                                      trades_df_remove_duplicates, trades_list_to_df,
-                                      trades_to_ohlcv)
+                                 DL_DATA_TIMEFRAMES, DOCS_LINK, Config)
+from freqtrade.data.converter import (clean_ohlcv_dataframe, convert_trades_to_ohlcv,
+                                      ohlcv_to_dataframe, trades_df_remove_duplicates,
+                                      trades_list_to_df)
 from freqtrade.data.history.idatahandler import IDataHandler, get_datahandler
 from freqtrade.enums import CandleType
 from freqtrade.exceptions import OperationalException
 from freqtrade.exchange import Exchange
 from freqtrade.plugins.pairlist.pairlist_helpers import dynamic_expand_pairlist
 from freqtrade.util import dt_ts, format_ms_time
-from freqtrade.util.binance_mig import migrate_binance_futures_data
 from freqtrade.util.datetime_helpers import dt_now
+from freqtrade.util.migrations import migrate_data
 
 
 logger = logging.getLogger(__name__)
@@ -311,15 +311,19 @@ def refresh_backtest_ohlcv_data(exchange: Exchange, pairs: List[str], timeframes
             # Predefined candletype (and timeframe) depending on exchange
             # Downloads what is necessary to backtest based on futures data.
             tf_mark = exchange.get_option('mark_ohlcv_timeframe')
+            tf_funding_rate = exchange.get_option('funding_fee_timeframe')
+
             fr_candle_type = CandleType.from_string(exchange.get_option('mark_ohlcv_price'))
             # All exchanges need FundingRate for futures trading.
             # The timeframe is aligned to the mark-price timeframe.
-            for funding_candle_type in (CandleType.FUNDING_RATE, fr_candle_type):
+            combs = ((CandleType.FUNDING_RATE, tf_funding_rate), (fr_candle_type, tf_mark))
+            for candle_type_f, tf in combs:
+                logger.debug(f'Downloading pair {pair}, {candle_type_f}, interval {tf}.')
                 _download_pair_history(pair=pair, process=process,
                                        datadir=datadir, exchange=exchange,
                                        timerange=timerange, data_handler=data_handler,
-                                       timeframe=str(tf_mark), new_pairs_days=new_pairs_days,
-                                       candle_type=funding_candle_type,
+                                       timeframe=str(tf), new_pairs_days=new_pairs_days,
+                                       candle_type=candle_type_f,
                                        erase=erase, prepend=prepend)
 
     return pairs_not_available
@@ -429,36 +433,6 @@ def refresh_backtest_trades_data(exchange: Exchange, pairs: List[str], datadir: 
     return pairs_not_available
 
 
-def convert_trades_to_ohlcv(
-    pairs: List[str],
-    timeframes: List[str],
-    datadir: Path,
-    timerange: TimeRange,
-    erase: bool = False,
-    data_format_ohlcv: str = 'feather',
-    data_format_trades: str = 'feather',
-    candle_type: CandleType = CandleType.SPOT
-) -> None:
-    """
-    Convert stored trades data to ohlcv data
-    """
-    data_handler_trades = get_datahandler(datadir, data_format=data_format_trades)
-    data_handler_ohlcv = get_datahandler(datadir, data_format=data_format_ohlcv)
-
-    for pair in pairs:
-        trades = data_handler_trades.trades_load(pair)
-        for timeframe in timeframes:
-            if erase:
-                if data_handler_ohlcv.ohlcv_purge(pair, timeframe, candle_type=candle_type):
-                    logger.info(f'Deleting existing data for pair {pair}, interval {timeframe}.')
-            try:
-                ohlcv = trades_to_ohlcv(trades, timeframe)
-                # Store ohlcv
-                data_handler_ohlcv.ohlcv_store(pair, timeframe, data=ohlcv, candle_type=candle_type)
-            except ValueError:
-                logger.exception(f'Could not convert {pair} to OHLCV.')
-
-
 def get_timerange(data: Dict[str, DataFrame]) -> Tuple[datetime, datetime]:
     """
     Get the maximum common timerange for the given backtest data.
@@ -530,6 +504,12 @@ def download_data_main(config: Config) -> None:
     logger.info(f"About to download pairs: {expanded_pairs}, "
                 f"intervals: {config['timeframes']} to {config['datadir']}")
 
+    if len(expanded_pairs) == 0:
+        logger.warning(
+            "No pairs available for download. "
+            "Please make sure you're using the correct Pair naming for your selected trade mode. \n"
+            f"More info: {DOCS_LINK}/bot-basics/#pair-naming")
+
     for timeframe in config['timeframes']:
         exchange.validate_timeframes(timeframe)
 
@@ -557,7 +537,7 @@ def download_data_main(config: Config) -> None:
                     "Please use `--dl-trades` instead for this exchange "
                     "(will unfortunately take a long time)."
                     )
-            migrate_binance_futures_data(config)
+            migrate_data(config, exchange)
             pairs_not_available = refresh_backtest_ohlcv_data(
                 exchange, pairs=expanded_pairs, timeframes=config['timeframes'],
                 datadir=config['datadir'], timerange=timerange,

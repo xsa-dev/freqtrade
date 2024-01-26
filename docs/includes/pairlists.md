@@ -25,6 +25,7 @@ You may also use something like `.*DOWN/BTC` or `.*UP/BTC` to exclude leveraged 
 * [`ProducerPairList`](#producerpairlist)
 * [`RemotePairList`](#remotepairlist)
 * [`AgeFilter`](#agefilter)
+* [`FullTradesFilter`](#fulltradesfilter)
 * [`OffsetFilter`](#offsetfilter)
 * [`PerformanceFilter`](#performancefilter)
 * [`PrecisionFilter`](#precisionfilter)
@@ -111,8 +112,8 @@ For convenience `lookback_days` can be specified, which will imply that 1d candl
 !!! Warning "Performance implications when using lookback range"
     If used in first position in combination with lookback, the computation of the range based volume can be time and resource consuming, as it downloads candles for all tradable pairs. Hence it's highly advised to use the standard approach with `VolumeFilter` to narrow the pairlist down for further range volume calculation.
 
-??? Tip "Unsupported exchanges (Bittrex, Gemini)"
-    On some exchanges (like Bittrex and Gemini), regular VolumePairList does not work as the api does not natively provide 24h volume. This can be worked around by using candle data to build the volume.
+??? Tip "Unsupported exchanges"
+    On some exchanges (like Gemini), regular VolumePairList does not work as the api does not natively provide 24h volume. This can be worked around by using candle data to build the volume.
     To roughly simulate 24h volume, you can use the following configuration.
     Please note that These pairlists will only refresh once per day.
 
@@ -235,6 +236,17 @@ in the first few days while the pair goes through its price-discovery period. Bo
 be caught out buying before the pair has finished dropping in price.
 
 This filter allows freqtrade to ignore pairs until they have been listed for at least `min_days_listed` days and listed before `max_days_listed`.
+
+#### FullTradesFilter
+
+Shrink whitelist to consist only in-trade pairs when the trade slots are full (when `max_open_trades` isn't being set to `-1` in the config).
+
+When the trade slots are full, there is no need to calculate indicators of the rest of the pairs (except informative pairs) since no new trade can be opened. By shrinking the whitelist to just the in-trade pairs, you can improve calculation speeds and reduce CPU usage. When a trade slot is free (either a trade is closed or `max_open_trades` value in config is increased), then the whitelist will return to normal state.
+
+When multiple pairlist filters are being used, it's recommended to put this filter at second position directly below the primary pairlist, so when the trade slots are full, the bot doesn't have to download data for the rest of the filters.
+
+!!! Warning "Backtesting"
+    `FullTradesFilter` does not support backtesting mode.
 
 #### OffsetFilter
 
@@ -376,7 +388,7 @@ If the trading range over the last 10 days is <1% or >99%, remove the pair from 
         "lookback_days": 10,
         "min_rate_of_change": 0.01,
         "max_rate_of_change": 0.99,
-        "refresh_period": 1440
+        "refresh_period": 86400
     }
 ]
 ```
@@ -431,7 +443,7 @@ The below example blacklists `BNB/BTC`, uses `VolumePairList` with `20` assets, 
         "method": "RangeStabilityFilter",
         "lookback_days": 10,
         "min_rate_of_change": 0.01,
-        "refresh_period": 1440
+        "refresh_period": 86400
     },
     {
         "method": "VolatilityFilter",
