@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 
+from freqtrade.configuration import running_in_docker
 from freqtrade.constants import Config
 from freqtrade.exceptions import OperationalException
 from freqtrade.rpc.api_server.uvicorn_threaded import UvicornServer
@@ -106,7 +107,7 @@ class ApiServer(RPCHandler):
             ApiServer._message_stream.publish(msg)
 
     def handle_rpc_exception(self, request, exc):
-        logger.exception(f"API Error calling: {exc}")
+        logger.error(f"API Error calling: {exc}")
         return JSONResponse(
             status_code=502,
             content={'error': f"Error querying {request.url.path}: {exc.message}"}
@@ -182,7 +183,7 @@ class ApiServer(RPCHandler):
         rest_port = self._config['api_server']['listen_port']
 
         logger.info(f'Starting HTTP Server at {rest_ip}:{rest_port}')
-        if not IPv4Address(rest_ip).is_loopback:
+        if not IPv4Address(rest_ip).is_loopback and not running_in_docker():
             logger.warning("SECURITY WARNING - Local Rest Server listening to external connections")
             logger.warning("SECURITY WARNING - This is insecure please set to your loopback,"
                            "e.g 127.0.0.1 in config.json")
