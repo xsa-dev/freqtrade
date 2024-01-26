@@ -134,6 +134,7 @@ Possible parameters are:
 * `stake_amount`
 * `stake_currency`
 * `base_currency`
+* `quote_currency`
 * `fiat_currency`
 * `order_type`
 * `current_rate`
@@ -155,6 +156,7 @@ Possible parameters are:
 * `stake_amount`
 * `stake_currency`
 * `base_currency`
+* `quote_currency`
 * `fiat_currency`
 * `order_type`
 * `current_rate`
@@ -176,6 +178,7 @@ Possible parameters are:
 * `stake_amount`
 * `stake_currency`
 * `base_currency`
+* `quote_currency`
 * `fiat_currency`
 * `order_type`
 * `current_rate`
@@ -199,6 +202,7 @@ Possible parameters are:
 * `profit_ratio`
 * `stake_currency`
 * `base_currency`
+* `quote_currency`
 * `fiat_currency`
 * `exit_reason`
 * `order_type`
@@ -224,6 +228,7 @@ Possible parameters are:
 * `profit_ratio`
 * `stake_currency`
 * `base_currency`
+* `quote_currency`
 * `fiat_currency`
 * `exit_reason`
 * `order_type`
@@ -249,6 +254,7 @@ Possible parameters are:
 * `profit_ratio`
 * `stake_currency`
 * `base_currency`
+* `quote_currency`
 * `fiat_currency`
 * `exit_reason`
 * `order_type`
@@ -302,6 +308,7 @@ You can configure this as follows:
 ```
 
 The above represents the default (`exit_fill` and `entry_fill` are optional and will default to the above configuration) - modifications are obviously possible.
+To disable either of the two default values (`entry_fill` / `exit_fill`), you can assign them an empty array (`exit_fill: []`).
 
 Available fields correspond to the fields for webhooks and are documented in the corresponding webhook sections.
 

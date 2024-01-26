@@ -105,7 +105,7 @@ def test_returns_latest_signal(ohlcv_history):
     _STRATEGY.config['trading_mode'] = 'spot'
 
 
-def test_analyze_pair_empty(default_conf, mocker, caplog, ohlcv_history):
+def test_analyze_pair_empty(mocker, caplog, ohlcv_history):
     mocker.patch.object(_STRATEGY.dp, 'ohlcv', return_value=ohlcv_history)
     mocker.patch.object(
         _STRATEGY, '_analyze_ticker_internal',
@@ -422,7 +422,7 @@ def test_min_roi_reached3(default_conf, fee) -> None:
         #   enable custom stoploss, expected after 1st call, expected after 2nd call
         (0.2, 0.9, ExitType.NONE, None, False, False, 0.3, 0.9, ExitType.NONE, None),
         (0.2, 0.9, ExitType.NONE, None, False, False, -0.2, 0.9, ExitType.STOP_LOSS, None),
-        (0.2, 0.9, ExitType.NONE, 0.8, False, False, -0.2, 0.9, ExitType.LIQUIDATION, None),
+        (0.2, 0.9, ExitType.NONE, 0.92, False, False, -0.09, 0.9, ExitType.LIQUIDATION, None),
         (0.2, 1.14, ExitType.NONE, None, True, False, 0.05, 1.14, ExitType.TRAILING_STOP_LOSS,
          None),
         (0.01, 0.96, ExitType.NONE, None, True, False, 0.05, 1, ExitType.NONE, None),
@@ -1019,3 +1019,30 @@ def test_auto_hyperopt_interface_loadparams(default_conf, mocker, caplog):
 
     StrategyResolver.load_strategy(default_conf)
     assert log_has("Invalid parameter file format.", caplog)
+
+
+@pytest.mark.parametrize('function,raises', [
+    ('populate_entry_trend', True),
+    ('advise_entry', False),
+    ('populate_exit_trend', True),
+    ('advise_exit', False),
+])
+def test_pandas_warning_direct(ohlcv_history, function, raises):
+
+    df = _STRATEGY.populate_indicators(ohlcv_history, {'pair': 'ETH/BTC'})
+    if raises:
+        with pytest.warns(FutureWarning):
+            # Test for Future warning
+            # FutureWarning: Setting an item of incompatible dtype is
+            # deprecated and will raise in a future error of pandas
+            # https://github.com/pandas-dev/pandas/issues/56503
+            getattr(_STRATEGY, function)(df, {'pair': 'ETH/BTC'})
+    else:
+        getattr(_STRATEGY, function)(df, {'pair': 'ETH/BTC'})
+
+
+def test_pandas_warning_through_analyze_pair(ohlcv_history, mocker, recwarn):
+
+    mocker.patch.object(_STRATEGY.dp, 'ohlcv', return_value=ohlcv_history)
+    _STRATEGY.analyze_pair('ETH/BTC')
+    assert len(recwarn) == 0
