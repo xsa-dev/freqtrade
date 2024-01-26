@@ -177,7 +177,7 @@ Mandatory parameters are marked as **Required**, which means that they are requi
 | `exit_pricing.order_book_top` | Bot will use the top N rate in Order Book "price_side" to exit. I.e. a value of 2 will allow the bot to pick the 2nd ask rate in [Order Book Exit](#exit-price-with-orderbook-enabled)<br>*Defaults to `1`.* <br> **Datatype:** Positive Integer
 | `custom_price_max_distance_ratio` | Configure maximum distance ratio between current and custom entry or exit price. <br>*Defaults to `0.02` 2%).*<br> **Datatype:** Positive float
 | | **TODO**
-| `use_exit_signal` | Use exit signals produced by the strategy in addition to the `minimal_roi`. [Strategy Override](#parameters-in-the-strategy). <br>*Defaults to `true`.* <br> **Datatype:** Boolean
+| `use_exit_signal` | Use exit signals produced by the strategy in addition to the `minimal_roi`. <br>Setting this to false disables the usage of `"exit_long"` and `"exit_short"` columns. Has no influence on other exit methods (Stoploss, ROI, callbacks). [Strategy Override](#parameters-in-the-strategy). <br>*Defaults to `true`.* <br> **Datatype:** Boolean
 | `exit_profit_only` | Wait until the bot reaches `exit_profit_offset` before taking an exit decision. [Strategy Override](#parameters-in-the-strategy). <br>*Defaults to `false`.* <br> **Datatype:** Boolean
 | `exit_profit_offset` | Exit-signal is only active above this value. Only active in combination with `exit_profit_only=True`. [Strategy Override](#parameters-in-the-strategy). <br>*Defaults to `0.0`.* <br> **Datatype:** Float (as ratio)
 | `ignore_roi_if_entry_signal` | Do not exit if the entry signal is still active. This setting takes preference over `minimal_roi` and `use_exit_signal`. [Strategy Override](#parameters-in-the-strategy). <br>*Defaults to `false`.* <br> **Datatype:** Boolean
@@ -321,7 +321,7 @@ For example, if you have 10 ETH available in your wallet on the exchange and `tr
 To fully utilize compounding profits when using multiple bots on the same exchange account, you'll want to limit each bot to a certain starting balance.
 This can be accomplished by setting `available_capital` to the desired starting balance.
 
-Assuming your account has 10.000 USDT and you want to run 2 different strategies on this exchange.
+Assuming your account has 10000 USDT and you want to run 2 different strategies on this exchange.
 You'd set `available_capital=5000` - granting each bot an initial capital of 5000 USDT.
 The bot will then split this starting balance equally into `max_open_trades` buckets.
 Profitable trades will result in increased stake-sizes for this bot - without affecting the stake-sizes of the other bot.
@@ -572,8 +572,10 @@ In addition to fiat currencies, a range of crypto currencies is supported.
 The valid values are:
 
 ```json
-"BTC", "ETH", "XRP", "LTC", "BCH", "USDT"
+"BTC", "ETH", "XRP", "LTC", "BCH", "BNB"
 ```
+
+Removing `fiat_display_currency` completely from the configuration will skip initializing coingecko, and will not show any FIAT currency conversion. This has no importance for the correct functioning of the bot.
 
 ## Using Dry-run mode
 
@@ -594,7 +596,7 @@ creating trades on the exchange.
 
 ```json
 "exchange": {
-    "name": "bittrex",
+    "name": "binance",
     "key": "key",
     "secret": "secret",
     ...
@@ -644,7 +646,7 @@ API Keys are usually only required for live trading (trading for real money, bot
 ```json
 {
     "exchange": {
-        "name": "bittrex",
+        "name": "binance",
         "key": "af8ddd35195e9dc500b9a6f799f6f5c93d89193b",
         "secret": "08a9dc6db3d7b53e1acebd9275677f4b0a04f1a5",
         //"password": "", // Optional, not needed by all exchanges)

@@ -728,7 +728,6 @@ def test_api_delete_trade(botclient, mocker, fee, markets, is_short):
 
     ftbot.strategy.order_types['stoploss_on_exchange'] = True
     trades = Trade.session.scalars(select(Trade)).all()
-    trades[1].stoploss_order_id = '1234'
     Trade.commit()
     assert len(trades) > 2
 
@@ -745,9 +744,9 @@ def test_api_delete_trade(botclient, mocker, fee, markets, is_short):
     assert cancel_mock.call_count == 0
 
     assert len(trades) - 1 == len(Trade.session.scalars(select(Trade)).all())
-    rc = client_delete(client, f"{BASE_URI}/trades/2")
+    rc = client_delete(client, f"{BASE_URI}/trades/5")
     assert_response(rc)
-    assert rc.json()['result_msg'] == 'Deleted trade 2. Closed 1 open orders.'
+    assert rc.json()['result_msg'] == 'Deleted trade 5. Closed 1 open orders.'
     assert len(trades) - 2 == len(Trade.session.scalars(select(Trade)).all())
     assert stoploss_mock.call_count == 1
 
@@ -1026,7 +1025,6 @@ def test_api_performance(botclient, fee):
         exchange='binance',
         stake_amount=1,
         open_rate=0.245441,
-        open_order_id="123456",
         is_open=False,
         fee_close=fee.return_value,
         fee_open=fee.return_value,
@@ -1043,7 +1041,6 @@ def test_api_performance(botclient, fee):
         stake_amount=1,
         exchange='binance',
         open_rate=0.412,
-        open_order_id="123456",
         is_open=False,
         fee_close=fee.return_value,
         fee_open=fee.return_value,
@@ -1065,12 +1062,69 @@ def test_api_performance(botclient, fee):
                           'profit_ratio': -0.05570419, 'profit_abs': -0.1150375}]
 
 
+def test_api_entries(botclient, fee):
+    ftbot, client = botclient
+    patch_get_signal(ftbot)
+    # Empty
+    rc = client_get(client, f"{BASE_URI}/entries")
+    assert_response(rc)
+    assert len(rc.json()) == 0
+
+    create_mock_trades(fee)
+    rc = client_get(client, f"{BASE_URI}/entries")
+    assert_response(rc)
+    response = rc.json()
+    assert len(response) == 2
+    resp = response[0]
+    assert resp['enter_tag'] == 'TEST1'
+    assert resp['count'] == 1
+    assert resp['profit_pct'] == 0.5
+
+
+def test_api_exits(botclient, fee):
+    ftbot, client = botclient
+    patch_get_signal(ftbot)
+    # Empty
+    rc = client_get(client, f"{BASE_URI}/exits")
+    assert_response(rc)
+    assert len(rc.json()) == 0
+
+    create_mock_trades(fee)
+    rc = client_get(client, f"{BASE_URI}/exits")
+    assert_response(rc)
+    response = rc.json()
+    assert len(response) == 2
+    resp = response[0]
+    assert resp['exit_reason'] == 'sell_signal'
+    assert resp['count'] == 1
+    assert resp['profit_pct'] == 0.5
+
+
+def test_api_mix_tag(botclient, fee):
+    ftbot, client = botclient
+    patch_get_signal(ftbot)
+    # Empty
+    rc = client_get(client, f"{BASE_URI}/mix_tags")
+    assert_response(rc)
+    assert len(rc.json()) == 0
+
+    create_mock_trades(fee)
+    rc = client_get(client, f"{BASE_URI}/mix_tags")
+    assert_response(rc)
+    response = rc.json()
+    assert len(response) == 2
+    resp = response[0]
+    assert resp['mix_tag'] == 'TEST1 sell_signal'
+    assert resp['count'] == 1
+    assert resp['profit_pct'] == 0.5
+
+
 @pytest.mark.parametrize(
-    'is_short,current_rate,open_order_id,open_trade_value',
-    [(True, 1.098e-05, 'dry_run_buy_short_12345', 15.0911775),
-     (False, 1.099e-05, 'dry_run_buy_long_12345', 15.1668225)])
+    'is_short,current_rate,open_trade_value',
+    [(True, 1.098e-05, 15.0911775),
+     (False, 1.099e-05, 15.1668225)])
 def test_api_status(botclient, mocker, ticker, fee, markets, is_short,
-                    current_rate, open_order_id, open_trade_value):
+                    current_rate, open_trade_value):
     ftbot, client = botclient
     patch_get_signal(ftbot)
     mocker.patch.multiple(
@@ -1111,7 +1165,6 @@ def test_api_status(botclient, mocker, ticker, fee, markets, is_short,
         'current_rate': current_rate,
         'open_date': ANY,
         'open_timestamp': ANY,
-        'open_order': None,
         'open_rate': 0.123,
         'pair': 'ETH/BTC',
         'base_currency': 'ETH',
@@ -1144,7 +1197,6 @@ def test_api_status(botclient, mocker, ticker, fee, markets, is_short,
         "is_short": is_short,
         'max_rate': ANY,
         'min_rate': ANY,
-        'open_order_id': open_order_id,
         'open_rate_requested': ANY,
         'open_trade_value': open_trade_value,
         'exit_reason': None,
@@ -1162,6 +1214,7 @@ def test_api_status(botclient, mocker, ticker, fee, markets, is_short,
         'price_precision': None,
         'precision_mode': None,
         'orders': [ANY],
+        'has_open_orders': True,
     }
 
     mocker.patch(f'{EXMS}.get_rate',
@@ -1291,7 +1344,6 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
         exchange='binance',
         stake_amount=1,
         open_rate=0.245441,
-        open_order_id="123456",
         open_date=datetime.now(timezone.utc),
         is_open=False,
         is_short=False,
@@ -1352,7 +1404,6 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
         'is_short': False,
         'max_rate': None,
         'min_rate': None,
-        'open_order_id': '123456',
         'open_rate_requested': None,
         'open_trade_value': 0.24605460,
         'exit_reason': None,
@@ -1369,6 +1420,7 @@ def test_api_force_entry(botclient, mocker, fee, endpoint):
         'amount_precision': None,
         'price_precision': None,
         'precision_mode': None,
+        'has_open_orders': False,
         'orders': [],
     }
 
@@ -1551,9 +1603,9 @@ def test_api_pair_history(botclient, mocker):
     assert 'data' in result
     data = result['data']
     assert len(data) == 289
-    # analyed DF has 28 columns
-    assert len(result['columns']) == 28
-    assert len(data[0]) == 28
+    # analyed DF has 30 columns
+    assert len(result['columns']) == 30
+    assert len(data[0]) == 30
     date_col_idx = [idx for idx, c in enumerate(result['columns']) if c == 'date'][0]
     rsi_col_idx = [idx for idx, c in enumerate(result['columns']) if c == 'rsi'][0]
 
@@ -1620,9 +1672,9 @@ def test_api_plot_config(botclient, mocker):
     assert_response(rc)
 
 
-def test_api_strategies(botclient, tmpdir):
+def test_api_strategies(botclient, tmp_path):
     ftbot, client = botclient
-    ftbot.config['user_data_dir'] = Path(tmpdir)
+    ftbot.config['user_data_dir'] = tmp_path
 
     rc = client_get(client, f"{BASE_URI}/strategies")
 
@@ -1640,7 +1692,8 @@ def test_api_strategies(botclient, tmpdir):
         'freqai_test_classifier',
         'freqai_test_multimodel_classifier_strat',
         'freqai_test_multimodel_strat',
-        'freqai_test_strat'
+        'freqai_test_strat',
+        'strategy_test_v3_recursive_issue'
     ]}
 
 
@@ -1704,9 +1757,9 @@ def test_api_exchanges(botclient):
     }
 
 
-def test_api_freqaimodels(botclient, tmpdir, mocker):
+def test_api_freqaimodels(botclient, tmp_path, mocker):
     ftbot, client = botclient
-    ftbot.config['user_data_dir'] = Path(tmpdir)
+    ftbot.config['user_data_dir'] = tmp_path
     mocker.patch(
         "freqtrade.resolvers.freqaimodel_resolver.FreqaiModelResolver.search_all_objects",
         return_value=[
@@ -1716,6 +1769,7 @@ def test_api_freqaimodels(botclient, tmpdir, mocker):
             {'name': 'LightGBMRegressorMultiTarget'},
             {'name': 'ReinforcementLearner'},
             {'name': 'ReinforcementLearner_multiproc'},
+            {'name': 'SKlearnRandomForestClassifier'},
             {'name': 'XGBoostClassifier'},
             {'name': 'XGBoostRFClassifier'},
             {'name': 'XGBoostRFRegressor'},
@@ -1734,6 +1788,7 @@ def test_api_freqaimodels(botclient, tmpdir, mocker):
         'LightGBMRegressorMultiTarget',
         'ReinforcementLearner',
         'ReinforcementLearner_multiproc',
+        'SKlearnRandomForestClassifier',
         'XGBoostClassifier',
         'XGBoostRFClassifier',
         'XGBoostRFRegressor',
@@ -1742,9 +1797,9 @@ def test_api_freqaimodels(botclient, tmpdir, mocker):
     ]}
 
 
-def test_api_pairlists_available(botclient, tmpdir):
+def test_api_pairlists_available(botclient, tmp_path):
     ftbot, client = botclient
-    ftbot.config['user_data_dir'] = Path(tmpdir)
+    ftbot.config['user_data_dir'] = tmp_path
 
     rc = client_get(client, f"{BASE_URI}/pairlists/available")
 
@@ -1771,9 +1826,9 @@ def test_api_pairlists_available(botclient, tmpdir):
     assert len(volumepl['params']) > 2
 
 
-def test_api_pairlists_evaluate(botclient, tmpdir, mocker):
+def test_api_pairlists_evaluate(botclient, tmp_path, mocker):
     ftbot, client = botclient
-    ftbot.config['user_data_dir'] = Path(tmpdir)
+    ftbot.config['user_data_dir'] = tmp_path
 
     rc = client_get(client, f"{BASE_URI}/pairlists/evaluate/randomJob")
 
@@ -1908,7 +1963,7 @@ def test_sysinfo(botclient):
     assert 'ram_pct' in result
 
 
-def test_api_backtesting(botclient, mocker, fee, caplog, tmpdir):
+def test_api_backtesting(botclient, mocker, fee, caplog, tmp_path):
     try:
         ftbot, client = botclient
         mocker.patch(f'{EXMS}.get_fee', fee)
@@ -1938,8 +1993,8 @@ def test_api_backtesting(botclient, mocker, fee, caplog, tmpdir):
         assert result['status_msg'] == 'Backtest reset'
         ftbot.config['export'] = 'trades'
         ftbot.config['backtest_cache'] = 'day'
-        ftbot.config['user_data_dir'] = Path(tmpdir)
-        ftbot.config['exportfilename'] = Path(tmpdir) / "backtest_results"
+        ftbot.config['user_data_dir'] = tmp_path
+        ftbot.config['exportfilename'] = tmp_path / "backtest_results"
         ftbot.config['exportfilename'].mkdir()
 
         # start backtesting
@@ -2197,14 +2252,14 @@ def test_api_ws_subscribe(botclient, mocker):
 
     with client.websocket_connect(ws_url) as ws:
         ws.send_json({'type': 'subscribe', 'data': ['whitelist']})
-        time.sleep(1)
+        time.sleep(0.2)
 
     # Check call count is now 1 as we sent a valid subscribe request
     assert sub_mock.call_count == 1
 
     with client.websocket_connect(ws_url) as ws:
         ws.send_json({'type': 'subscribe', 'data': 'whitelist'})
-        time.sleep(1)
+        time.sleep(0.2)
 
     # Call count hasn't changed as the subscribe request was invalid
     assert sub_mock.call_count == 1

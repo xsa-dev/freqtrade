@@ -1,9 +1,9 @@
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, RootModel, SerializeAsAny
+from pydantic import BaseModel, RootModel, SerializeAsAny
 
-from freqtrade.constants import DATETIME_PRINT_FORMAT, IntOrInf
+from freqtrade.constants import IntOrInf
 from freqtrade.enums import MarginMode, OrderTypeValues, SignalDirection, TradingMode
 from freqtrade.types import ValidExchangesType
 
@@ -95,13 +95,28 @@ class Count(BaseModel):
     total_stake: float
 
 
-class PerformanceEntry(BaseModel):
-    pair: str
-    profit: float
+class __BaseStatsModel(BaseModel):
     profit_ratio: float
     profit_pct: float
     profit_abs: float
     count: int
+
+
+class Entry(__BaseStatsModel):
+    enter_tag: str
+
+
+class Exit(__BaseStatsModel):
+    exit_reason: str
+
+
+class MixTag(__BaseStatsModel):
+    mix_tag: str
+
+
+class PerformanceEntry(__BaseStatsModel):
+    pair: str
+    profit: float
 
 
 class Profit(BaseModel):
@@ -308,7 +323,7 @@ class TradeSchema(BaseModel):
 
     min_rate: Optional[float] = None
     max_rate: Optional[float] = None
-    open_order_id: Optional[str] = None
+    has_open_orders: bool
     orders: List[OrderSchema]
 
     leverage: Optional[float] = None
@@ -332,8 +347,6 @@ class OpenTradeSchema(TradeSchema):
     total_profit_abs: float
     total_profit_fiat: Optional[float] = None
     total_profit_ratio: Optional[float] = None
-
-    open_order: Optional[str] = None
 
 
 class TradeResponse(BaseModel):
@@ -458,6 +471,7 @@ class FreqAIModelListResponse(BaseModel):
 class StrategyResponse(BaseModel):
     strategy: str
     code: str
+    timeframe: Optional[str]
 
 
 class AvailablePairs(BaseModel):
@@ -486,11 +500,6 @@ class PairHistory(BaseModel):
     data_start: str
     data_stop: str
     data_stop_ts: int
-    # TODO[pydantic]: The following keys were removed: `json_encoders`.
-    # Check https://docs.pydantic.dev/dev-v2/migration/#changes-to-config for more information.
-    model_config = ConfigDict(json_encoders={
-        datetime: lambda v: v.strftime(DATETIME_PRINT_FORMAT),
-    })
 
 
 class BacktestFreqAIInputs(BaseModel):
@@ -529,6 +538,10 @@ class BacktestHistoryEntry(BaseModel):
     run_id: str
     backtest_start_time: int
     notes: Optional[str] = ''
+    backtest_start_ts: Optional[int] = None
+    backtest_end_ts: Optional[int] = None
+    timeframe: Optional[str] = None
+    timeframe_detail: Optional[str] = None
 
 
 class BacktestMetadataUpdate(BaseModel):

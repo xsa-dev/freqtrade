@@ -25,13 +25,13 @@ from freqtrade.exceptions import ExchangeError, PricingError
 from freqtrade.exchange import timeframe_to_minutes, timeframe_to_msecs
 from freqtrade.exchange.types import Tickers
 from freqtrade.loggers import bufferHandler
-from freqtrade.misc import decimals_per_coin
-from freqtrade.persistence import KeyStoreKeys, KeyValueStore, Order, PairLocks, Trade
+from freqtrade.persistence import KeyStoreKeys, KeyValueStore, PairLocks, Trade
 from freqtrade.persistence.models import PairLock
 from freqtrade.plugins.pairlist.pairlist_helpers import expand_pairlist
 from freqtrade.rpc.fiat_convert import CryptoToFiatConverter
 from freqtrade.rpc.rpc_types import RPCSendMsg
-from freqtrade.util import dt_humanize, dt_now, dt_ts_def, format_date, shorten_date
+from freqtrade.util import (decimals_per_coin, dt_humanize, dt_now, dt_ts_def, format_date,
+                            shorten_date)
 from freqtrade.wallets import PositionWallet, Wallet
 
 
@@ -121,8 +121,8 @@ class RPC:
             'stake_currency_decimals': decimals_per_coin(config['stake_currency']),
             'stake_amount': str(config['stake_amount']),
             'available_capital': config.get('available_capital'),
-            'max_open_trades': (config['max_open_trades']
-                                if config['max_open_trades'] != float('inf') else -1),
+            'max_open_trades': (config.get('max_open_trades', 0)
+                                if config.get('max_open_trades', 0) != float('inf') else -1),
             'minimal_roi': config['minimal_roi'].copy() if 'minimal_roi' in config else {},
             'stoploss': config.get('stoploss'),
             'stoploss_on_exchange': config.get('order_types',
@@ -171,13 +171,20 @@ class RPC:
         else:
             results = []
             for trade in trades:
-                order: Optional[Order] = None
                 current_profit_fiat: Optional[float] = None
                 total_profit_fiat: Optional[float] = None
+
+                # prepare open orders details
+                oo_details: Optional[str] = ""
+                oo_details_lst = [
+                    f'({oo.order_type} {oo.side} rem={oo.safe_remaining:.8f})'
+                    for oo in trade.open_orders
+                    if oo.ft_order_side not in ['stoploss']
+                ]
+                oo_details = ', '.join(oo_details_lst)
+
                 total_profit_abs = 0.0
                 total_profit_ratio: Optional[float] = None
-                if trade.open_order_id:
-                    order = trade.select_order_by_order_id(trade.open_order_id)
                 # calculate profit and send message to user
                 if trade.is_open:
                     try:
@@ -234,7 +241,6 @@ class RPC:
                     profit_pct=round(current_profit * 100, 2),
                     profit_abs=current_profit_abs,
                     profit_fiat=current_profit_fiat,
-
                     total_profit_abs=total_profit_abs,
                     total_profit_fiat=total_profit_fiat,
                     total_profit_ratio=total_profit_ratio,
@@ -243,10 +249,7 @@ class RPC:
                     stoploss_current_dist_pct=round(stoploss_current_dist_ratio * 100, 2),
                     stoploss_entry_dist=stoploss_entry_dist,
                     stoploss_entry_dist_ratio=round(stoploss_entry_dist_ratio, 8),
-                    open_order=(
-                        f'({order.order_type} {order.side} rem={order.safe_remaining:.8f})' if
-                        order else None
-                    ),
+                    open_orders=oo_details
                 ))
                 results.append(trade_dict)
             return results
@@ -288,18 +291,22 @@ class RPC:
                         profit_str += f" ({fiat_profit:.2f})"
                         fiat_profit_sum = fiat_profit if isnan(fiat_profit_sum) \
                             else fiat_profit_sum + fiat_profit
-                open_order = (trade.select_order_by_order_id(
-                    trade.open_order_id) if trade.open_order_id else None)
+
+                active_attempt_side_symbols = [
+                    '*' if (oo and oo.ft_order_side == trade.entry_side) else '**'
+                    for oo in trade.open_orders
+                ]
+
+                # exemple: '*.**.**' trying to enter, exit and exit with 3 different orders
+                active_attempt_side_symbols_str = '.'.join(active_attempt_side_symbols)
 
                 detail_trade = [
                     f'{trade.id} {direction_str}',
-                    trade.pair + ('*' if (open_order
-                                  and open_order.ft_order_side == trade.entry_side) else '')
-                    + ('**' if (open_order and
-                                open_order.ft_order_side == trade.exit_side is not None) else ''),
+                    trade.pair + active_attempt_side_symbols_str,
                     shorten_date(dt_humanize(trade.open_date, only_distance=True)),
                     profit_str
                 ]
+
                 if self._config.get('position_adjustment_enable', False):
                     max_entry_str = ''
                     if self._config.get('max_entry_position_adjustment', -1) > 0:
@@ -780,21 +787,25 @@ class RPC:
 
     def __exec_force_exit(self, trade: Trade, ordertype: Optional[str],
                           amount: Optional[float] = None) -> bool:
-        # Check if there is there is an open order
-        fully_canceled = False
-        if trade.open_order_id:
-            order = self._freqtrade.exchange.fetch_order(trade.open_order_id, trade.pair)
+        # Check if there is there are open orders
+        trade_entry_cancelation_registry = []
+        for oo in trade.open_orders:
+            trade_entry_cancelation_res = {'order_id': oo.order_id, 'cancel_state': False}
+            order = self._freqtrade.exchange.fetch_order(oo.order_id, trade.pair)
 
             if order['side'] == trade.entry_side:
                 fully_canceled = self._freqtrade.handle_cancel_enter(
-                    trade, order, CANCEL_REASON['FORCE_EXIT'])
+                    trade, order, oo, CANCEL_REASON['FORCE_EXIT'])
+                trade_entry_cancelation_res['cancel_state'] = fully_canceled
+                trade_entry_cancelation_registry.append(trade_entry_cancelation_res)
 
             if order['side'] == trade.exit_side:
                 # Cancel order - so it is placed anew with a fresh price.
-                self._freqtrade.handle_cancel_exit(trade, order, CANCEL_REASON['FORCE_EXIT'])
+                self._freqtrade.handle_cancel_exit(
+                    trade, order, oo, CANCEL_REASON['FORCE_EXIT'])
 
-        if not fully_canceled:
-            if trade.open_order_id is not None:
+        if all(tocr['cancel_state'] is False for tocr in trade_entry_cancelation_registry):
+            if trade.has_open_orders:
                 # Order cancellation failed, so we can't exit.
                 return False
             # Get current rate and execute sell
@@ -893,17 +904,18 @@ class RPC:
         if trade:
             is_short = trade.is_short
             if not self._freqtrade.strategy.position_adjustment_enable:
-                raise RPCException(f'position for {pair} already open - id: {trade.id}')
-            if trade.open_order_id is not None:
-                raise RPCException(f'position for {pair} already open - id: {trade.id} '
-                                   f'and has open order {trade.open_order_id}')
+                raise RPCException(f"position for {pair} already open - id: {trade.id}")
+            if trade.has_open_orders:
+                raise RPCException(f"position for {pair} already open - id: {trade.id} "
+                                   f"and has open order {','.join(trade.open_orders_ids)}")
         else:
             if Trade.get_open_trade_count() >= self._config['max_open_trades']:
                 raise RPCException("Maximum number of trades is reached.")
 
         if not stake_amount:
             # gen stake amount
-            stake_amount = self._freqtrade.wallets.get_trade_stake_amount(pair)
+            stake_amount = self._freqtrade.wallets.get_trade_stake_amount(
+                pair, self._config['max_open_trades'])
 
         # execute buy
         if not order_type:
@@ -933,16 +945,18 @@ class RPC:
             if not trade:
                 logger.warning('cancel_open_order: Invalid trade_id received.')
                 raise RPCException('Invalid trade_id.')
-            if not trade.open_order_id:
+            if not trade.has_open_orders:
                 logger.warning('cancel_open_order: No open order for trade_id.')
                 raise RPCException('No open order for trade_id.')
 
-            try:
-                order = self._freqtrade.exchange.fetch_order(trade.open_order_id, trade.pair)
-            except ExchangeError as e:
-                logger.info(f"Cannot query order for {trade} due to {e}.", exc_info=True)
-                raise RPCException("Order not found.")
-            self._freqtrade.handle_cancel_order(order, trade, CANCEL_REASON['USER_CANCEL'])
+            for open_order in trade.open_orders:
+                try:
+                    order = self._freqtrade.exchange.fetch_order(open_order.order_id, trade.pair)
+                except ExchangeError as e:
+                    logger.info(f"Cannot query order for {trade} due to {e}.", exc_info=True)
+                    raise RPCException("Order not found.")
+                self._freqtrade.handle_cancel_order(
+                    order, open_order, trade, CANCEL_REASON['USER_CANCEL'])
             Trade.commit()
 
     def _rpc_delete(self, trade_id: int) -> Dict[str, Union[str, int]]:
@@ -958,9 +972,9 @@ class RPC:
                 raise RPCException('invalid argument')
 
             # Try cancelling regular order if that exists
-            if trade.open_order_id:
+            for open_order in trade.open_orders:
                 try:
-                    self._freqtrade.exchange.cancel_order(trade.open_order_id, trade.pair)
+                    self._freqtrade.exchange.cancel_order(open_order.order_id, trade.pair)
                     c_count += 1
                 except (ExchangeError):
                     pass
