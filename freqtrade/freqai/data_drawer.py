@@ -12,7 +12,6 @@ import numpy as np
 import pandas as pd
 import psutil
 import rapidjson
-from joblib import dump, load
 from joblib.externals import cloudpickle
 from numpy.typing import NDArray
 from pandas import DataFrame
@@ -263,23 +262,51 @@ class FreqaiDataDrawer:
             self.pair_dict[metadata["pair"]] = self.empty_pair_dict.copy()
             return
 
-    def set_initial_return_values(self, pair: str, pred_df: DataFrame) -> None:
+    def set_initial_return_values(self, pair: str,
+                                  pred_df: DataFrame,
+                                  dataframe: DataFrame
+                                  ) -> None:
         """
         Set the initial return values to the historical predictions dataframe. This avoids needing
         to repredict on historical candles, and also stores historical predictions despite
         retrainings (so stored predictions are true predictions, not just inferencing on trained
-        data)
+        data).
+
+        We also aim to keep the date from historical predictions so that the FreqUI displays
+        zeros during any downtime (between FreqAI reloads).
         """
 
-        hist_df = self.historic_predictions
-        len_diff = len(hist_df[pair].index) - len(pred_df.index)
-        if len_diff < 0:
-            df_concat = pd.concat([pred_df.iloc[:abs(len_diff)], hist_df[pair]],
-                                  ignore_index=True, keys=hist_df[pair].keys())
+        new_pred = pred_df.copy()
+        # set new_pred values to nans (we want to signal to user that there was nothing
+        # historically made during downtime. The newest pred will get appeneded later in
+        # append_model_predictions)
+        new_pred.iloc[:, :] = np.nan
+        new_pred["date_pred"] = dataframe["date"]
+        hist_preds = self.historic_predictions[pair].copy()
+
+        # ensure both dataframes have the same date format so they can be merged
+        new_pred["date_pred"] = pd.to_datetime(new_pred["date_pred"])
+        hist_preds["date_pred"] = pd.to_datetime(hist_preds["date_pred"])
+
+        # find the closest common date between new_pred and historic predictions
+        # and cut off the new_pred dataframe at that date
+        common_dates = pd.merge(new_pred, hist_preds, on="date_pred", how="inner")
+        if len(common_dates.index) > 0:
+            new_pred = new_pred.iloc[len(common_dates):]
         else:
-            df_concat = hist_df[pair].tail(len(pred_df.index)).reset_index(drop=True)
+            logger.warning("No common dates found between new predictions and historic "
+                           "predictions. You likely left your FreqAI instance offline "
+                           f"for more than {len(dataframe.index)} candles.")
+
+        # reindex new_pred columns to match the historic predictions dataframe
+        new_pred_reindexed = new_pred.reindex(columns=hist_preds.columns)
+        df_concat = pd.concat([hist_preds, new_pred_reindexed], ignore_index=True)
+
+        # any missing values will get zeroed out so users can see the exact
+        # downtime in FreqUI
         df_concat = df_concat.fillna(0)
-        self.model_return_values[pair] = df_concat
+        self.historic_predictions[pair] = df_concat
+        self.model_return_values[pair] = df_concat.tail(len(dataframe.index)).reset_index(drop=True)
 
     def append_model_predictions(self, pair: str, predictions: DataFrame,
                                  do_preds: NDArray[np.int_],
@@ -296,9 +323,9 @@ class FreqaiDataDrawer:
         index = self.historic_predictions[pair].index[-1:]
         columns = self.historic_predictions[pair].columns
 
-        nan_df = pd.DataFrame(np.nan, index=index, columns=columns)
+        zeros_df = pd.DataFrame(np.zeros((1, len(columns))), index=index, columns=columns)
         self.historic_predictions[pair] = pd.concat(
-            [self.historic_predictions[pair], nan_df], ignore_index=True, axis=0)
+            [self.historic_predictions[pair], zeros_df], ignore_index=True, axis=0)
         df = self.historic_predictions[pair]
 
         # model outputs and associated statistics
@@ -375,7 +402,7 @@ class FreqaiDataDrawer:
         num_keep = self.freqai_info["purge_old_models"]
         if not num_keep:
             return
-        elif type(num_keep) == bool:
+        elif isinstance(num_keep, bool):
             num_keep = 2
 
         model_folders = [x for x in self.full_path.iterdir() if x.is_dir()]
@@ -449,7 +476,8 @@ class FreqaiDataDrawer:
 
         # Save the trained model
         if self.model_type == 'joblib':
-            dump(model, save_path / f"{dk.model_filename}_model.joblib")
+            with (save_path / f"{dk.model_filename}_model.joblib").open("wb") as fp:
+                cloudpickle.dump(model, fp)
         elif self.model_type == 'keras':
             model.save(save_path / f"{dk.model_filename}_model.h5")
         elif self.model_type in ["stable_baselines3", "sb3_contrib", "pytorch"]:
@@ -536,7 +564,8 @@ class FreqaiDataDrawer:
         if dk.live and coin in self.model_dictionary:
             model = self.model_dictionary[coin]
         elif self.model_type == 'joblib':
-            model = load(dk.data_path / f"{dk.model_filename}_model.joblib")
+            with (dk.data_path / f"{dk.model_filename}_model.joblib").open("rb") as fp:
+                model = cloudpickle.load(fp)
         elif 'stable_baselines' in self.model_type or 'sb3_contrib' == self.model_type:
             mod = importlib.import_module(
                 self.model_type, self.freqai_info['rl_config']['model_type'])
@@ -635,7 +664,7 @@ class FreqaiDataDrawer:
                     timeframe=tf,
                     pair=pair,
                     timerange=timerange,
-                    data_format=self.config.get("dataformat_ohlcv", "json"),
+                    data_format=self.config.get("dataformat_ohlcv", "feather"),
                     candle_type=self.config.get("candle_type_def", CandleType.SPOT),
                 )
 

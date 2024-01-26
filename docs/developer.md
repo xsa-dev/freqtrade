@@ -77,7 +77,7 @@ def test_method_to_test(caplog):
 
 ### Debug configuration
 
-To debug freqtrade, we recommend VSCode with the following launch configuration (located in `.vscode/launch.json`).
+To debug freqtrade, we recommend VSCode (with the Python extension) with the following launch configuration (located in `.vscode/launch.json`).
 Details will obviously vary between setups - but this should work to get you started.
 
 ``` json
@@ -101,6 +101,19 @@ Command line arguments can be added in the `"args"` array.
 This method can also be used to debug a strategy, by setting the breakpoints within the strategy.
 
 A similar setup can also be taken for Pycharm - using `freqtrade` as module name, and setting the command line arguments as "parameters".
+
+??? Tip "Correct venv usage"
+    When using a virtual environment (which you should), make sure that your Editor is using the correct virtual environment to avoid problems or "unknown import" errors.
+
+    #### Vscode
+
+    You can select the correct environment in VSCode with the command "Python: Select Interpreter" - which will show you environments the extension detected.
+    If your environment has not been detected, you can also pick a path manually.
+
+    #### Pycharm
+
+    In pycharm, you can select the appropriate Environment in the "Run/Debug Configurations" window.
+    ![Pycharm debug configuration](assets/pycharm_debug.png)
 
 !!! Note "Startup directory"
     This assumes that you have the repository checked out, and the editor is started at the repository root level (so setup.py is at the top level of your repository).
@@ -305,6 +318,7 @@ Additional tests / steps to complete:
 * Check if balance shows correctly (*)
 * Create market order (*)
 * Create limit order (*)
+* Cancel order (*)
 * Complete trade (enter + exit) (*)
   * Compare result calculation between exchange and bot
   * Ensure fees are applied correctly (check the database against the exchange)
@@ -405,6 +419,9 @@ This part of the documentation is aimed at maintainers, and shows how to create 
 
 ### Create release branch
 
+!!! Note
+    Make sure that the `stable` branch is up-to-date!
+
 First, pick a commit that's about one week old (to not include latest additions to releases).
 
 ``` bash
@@ -417,13 +434,10 @@ Determine if crucial bugfixes have been made between this commit and the current
 * Merge the release branch (stable) into this branch.
 * Edit `freqtrade/__init__.py` and add the version matching the current date (for example `2019.7` for July 2019). Minor versions can be `2019.7.1` should we need to do a second release that month. Version numbers must follow allowed versions from PEP0440 to avoid failures pushing to pypi.
 * Commit this part.
-* push that branch to the remote and create a PR against the stable branch.
+* Push that branch to the remote and create a PR against the **stable branch**.
 * Update develop version to next version following the pattern `2019.8-dev`.
 
 ### Create changelog from git commits
-
-!!! Note
-    Make sure that the `stable` branch is up-to-date!
 
 ``` bash
 # Needs to be done before merging / pulling that branch.
@@ -453,7 +467,13 @@ Once the PR against stable is merged (best right after merging):
 * Use the button "Draft a new release" in the Github UI (subsection releases).
 * Use the version-number specified as tag.
 * Use "stable" as reference (this step comes after the above PR is merged).
-* Use the above changelog as release comment (as codeblock)
+* Use the above changelog as release comment (as codeblock).
+* Use the below snippet for the new release
+
+??? Tip "Release template"
+    ````
+    --8<-- "includes/release_template.md"
+    ````
 
 ## Releases
 

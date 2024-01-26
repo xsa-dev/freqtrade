@@ -17,7 +17,7 @@ from freqtrade.constants import (FULL_DATAFRAME_THRESHOLD, Config, ListPairsWith
 from freqtrade.data.history import load_pair_history
 from freqtrade.enums import CandleType, RPCMessageType, RunMode
 from freqtrade.exceptions import ExchangeError, OperationalException
-from freqtrade.exchange import Exchange, timeframe_to_seconds
+from freqtrade.exchange import Exchange, timeframe_to_prev_date, timeframe_to_seconds
 from freqtrade.exchange.types import OrderBook
 from freqtrade.misc import append_candles_to_dataframe
 from freqtrade.rpc import RPCManager
@@ -46,6 +46,8 @@ class DataProvider:
         self.__rpc = rpc
         self.__cached_pairs: Dict[PairWithTimeframe, Tuple[DataFrame, datetime]] = {}
         self.__slice_index: Optional[int] = None
+        self.__slice_date: Optional[datetime] = None
+
         self.__cached_pairs_backtesting: Dict[PairWithTimeframe, DataFrame] = {}
         self.__producer_pairs_df: Dict[str,
                                        Dict[PairWithTimeframe, Tuple[DataFrame, datetime]]] = {}
@@ -64,9 +66,18 @@ class DataProvider:
     def _set_dataframe_max_index(self, limit_index: int):
         """
         Limit analyzed dataframe to max specified index.
+        Only relevant in backtesting.
         :param limit_index: dataframe index.
         """
         self.__slice_index = limit_index
+
+    def _set_dataframe_max_date(self, limit_date: datetime):
+        """
+        Limit infomrative dataframe to max specified index.
+        Only relevant in backtesting.
+        :param limit_date: "current date"
+        """
+        self.__slice_date = limit_date
 
     def _set_cached_df(
         self,
@@ -284,7 +295,7 @@ class DataProvider:
     def historic_ohlcv(
         self,
         pair: str,
-        timeframe: Optional[str] = None,
+        timeframe: str,
         candle_type: str = ''
     ) -> DataFrame:
         """
@@ -300,23 +311,25 @@ class DataProvider:
             timerange = TimeRange.parse_timerange(None if self._config.get(
                 'timerange') is None else str(self._config.get('timerange')))
 
-            # It is not necessary to add the training candles, as they
-            # were already added at the beginning of the backtest.
-            startup_candles = self.get_required_startup(str(timeframe), False)
+            startup_candles = self.get_required_startup(str(timeframe))
             tf_seconds = timeframe_to_seconds(str(timeframe))
             timerange.subtract_start(tf_seconds * startup_candles)
+
+            logger.info(f"Loading data for {pair} {timeframe} "
+                        f"from {timerange.start_fmt} to {timerange.stop_fmt}")
+
             self.__cached_pairs_backtesting[saved_pair] = load_pair_history(
                 pair=pair,
-                timeframe=timeframe or self._config['timeframe'],
+                timeframe=timeframe,
                 datadir=self._config['datadir'],
                 timerange=timerange,
-                data_format=self._config.get('dataformat_ohlcv', 'json'),
+                data_format=self._config['dataformat_ohlcv'],
                 candle_type=_candle_type,
 
             )
         return self.__cached_pairs_backtesting[saved_pair].copy()
 
-    def get_required_startup(self, timeframe: str, add_train_candles: bool = True) -> int:
+    def get_required_startup(self, timeframe: str) -> int:
         freqai_config = self._config.get('freqai', {})
         if not freqai_config.get('enabled', False):
             return self._config.get('startup_candle_count', 0)
@@ -326,12 +339,11 @@ class DataProvider:
             # make sure the startupcandles is at least the set maximum indicator periods
             self._config['startup_candle_count'] = max(startup_candles, max(indicator_periods))
             tf_seconds = timeframe_to_seconds(timeframe)
-            train_candles = 0
-            if add_train_candles:
-                train_candles = freqai_config['train_period_days'] * 86400 / tf_seconds
+            train_candles = freqai_config['train_period_days'] * 86400 / tf_seconds
             total_candles = int(self._config['startup_candle_count'] + train_candles)
-            logger.info(f'Increasing startup_candle_count for freqai to {total_candles}')
-            return total_candles
+            logger.info(
+                f'Increasing startup_candle_count for freqai on {timeframe} to {total_candles}')
+        return total_candles
 
     def get_pair_dataframe(
         self,
@@ -354,7 +366,13 @@ class DataProvider:
             data = self.ohlcv(pair=pair, timeframe=timeframe, candle_type=candle_type)
         else:
             # Get historical OHLCV data (cached on disk).
+            timeframe = timeframe or self._config['timeframe']
             data = self.historic_ohlcv(pair=pair, timeframe=timeframe, candle_type=candle_type)
+            # Cut date to timeframe-specific date.
+            # This is necessary to prevent lookahead bias in callbacks through informative pairs.
+            if self.__slice_date:
+                cutoff_date = timeframe_to_prev_date(timeframe, self.__slice_date)
+                data = data.loc[data['date'] < cutoff_date]
         if len(data) == 0:
             logger.warning(f"No data found for ({pair}, {timeframe}, {candle_type}).")
         return data

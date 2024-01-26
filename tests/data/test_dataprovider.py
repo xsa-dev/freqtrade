@@ -63,9 +63,10 @@ def test_historic_ohlcv(mocker, default_conf, ohlcv_history):
 
 def test_historic_ohlcv_dataformat(mocker, default_conf, ohlcv_history):
     hdf5loadmock = MagicMock(return_value=ohlcv_history)
-    jsonloadmock = MagicMock(return_value=ohlcv_history)
+    featherloadmock = MagicMock(return_value=ohlcv_history)
     mocker.patch("freqtrade.data.history.hdf5datahandler.HDF5DataHandler._ohlcv_load", hdf5loadmock)
-    mocker.patch("freqtrade.data.history.jsondatahandler.JsonDataHandler._ohlcv_load", jsonloadmock)
+    mocker.patch("freqtrade.data.history.featherdatahandler.FeatherDataHandler._ohlcv_load",
+                 featherloadmock)
 
     default_conf["runmode"] = RunMode.BACKTEST
     exchange = get_patched_exchange(mocker, default_conf)
@@ -73,17 +74,17 @@ def test_historic_ohlcv_dataformat(mocker, default_conf, ohlcv_history):
     data = dp.historic_ohlcv("UNITTEST/BTC", "5m")
     assert isinstance(data, DataFrame)
     hdf5loadmock.assert_not_called()
-    jsonloadmock.assert_called_once()
+    featherloadmock.assert_called_once()
 
     # Switching to dataformat hdf5
     hdf5loadmock.reset_mock()
-    jsonloadmock.reset_mock()
+    featherloadmock.reset_mock()
     default_conf["dataformat_ohlcv"] = "hdf5"
     dp = DataProvider(default_conf, exchange)
     data = dp.historic_ohlcv("UNITTEST/BTC", "5m")
     assert isinstance(data, DataFrame)
     hdf5loadmock.assert_called_once()
-    jsonloadmock.assert_not_called()
+    featherloadmock.assert_not_called()
 
 
 @pytest.mark.parametrize('candle_type', [
@@ -128,9 +129,14 @@ def test_get_pair_dataframe(mocker, default_conf, ohlcv_history, candle_type):
     default_conf["runmode"] = RunMode.BACKTEST
     dp = DataProvider(default_conf, exchange)
     assert dp.runmode == RunMode.BACKTEST
-    assert isinstance(dp.get_pair_dataframe(
-        "UNITTEST/BTC", timeframe, candle_type=candle_type), DataFrame)
-    # assert dp.get_pair_dataframe("NONESENSE/AAA", timeframe).empty
+    df = dp.get_pair_dataframe("UNITTEST/BTC", timeframe, candle_type=candle_type)
+    assert isinstance(df, DataFrame)
+    assert len(df) == 3  # ohlcv_history mock has just 3 rows
+
+    dp._set_dataframe_max_date(ohlcv_history.iloc[-1]['date'])
+    df = dp.get_pair_dataframe("UNITTEST/BTC", timeframe, candle_type=candle_type)
+    assert isinstance(df, DataFrame)
+    assert len(df) == 2  # ohlcv_history is limited to 2 rows now
 
 
 def test_available_pairs(mocker, default_conf, ohlcv_history):
@@ -258,7 +264,7 @@ def test_orderbook(mocker, default_conf, order_book_l2):
     assert order_book_l2.call_args_list[0][0][0] == 'ETH/BTC'
     assert order_book_l2.call_args_list[0][0][1] >= 5
 
-    assert type(res) is dict
+    assert isinstance(res, dict)
     assert 'bids' in res
     assert 'asks' in res
 
@@ -271,7 +277,7 @@ def test_market(mocker, default_conf, markets):
     dp = DataProvider(default_conf, exchange)
     res = dp.market('ETH/BTC')
 
-    assert type(res) is dict
+    assert isinstance(res, dict)
     assert 'symbol' in res
     assert res['symbol'] == 'ETH/BTC'
 
@@ -285,7 +291,7 @@ def test_ticker(mocker, default_conf, tickers):
     exchange = get_patched_exchange(mocker, default_conf)
     dp = DataProvider(default_conf, exchange)
     res = dp.ticker('ETH/BTC')
-    assert type(res) is dict
+    assert isinstance(res, dict)
     assert 'symbol' in res
     assert res['symbol'] == 'ETH/BTC'
 
@@ -494,3 +500,62 @@ def test_dp__add_external_df(default_conf_usdt):
     # 36 hours - from 2022-01-03 12:00:00+00:00 to 2022-01-05 00:00:00+00:00
     assert isinstance(res[1], int)
     assert res[1] == 0
+
+
+def test_dp_get_required_startup(default_conf_usdt):
+    timeframe = '1h'
+    default_conf_usdt["timeframe"] = timeframe
+    dp = DataProvider(default_conf_usdt, None)
+
+    # No FreqAI config
+    assert dp.get_required_startup('5m') == 0
+    assert dp.get_required_startup('1h') == 0
+    assert dp.get_required_startup('1d') == 0
+
+    dp._config['startup_candle_count'] = 20
+    assert dp.get_required_startup('5m') == 20
+    assert dp.get_required_startup('1h') == 20
+    assert dp.get_required_startup('1h') == 20
+
+    # With freqAI config
+
+    dp._config['freqai'] = {
+        'enabled': True,
+        'train_period_days': 20,
+        'feature_parameters': {
+            'indicator_periods_candles': [
+                5,
+                20,
+            ]
+        }
+    }
+    assert dp.get_required_startup('5m') == 5780
+    assert dp.get_required_startup('1h') == 500
+    assert dp.get_required_startup('1d') == 40
+
+    # FreqAI kindof ignores startup_candle_count if it's below indicator_periods_candles
+    dp._config['startup_candle_count'] = 0
+    assert dp.get_required_startup('5m') == 5780
+    assert dp.get_required_startup('1h') == 500
+    assert dp.get_required_startup('1d') == 40
+
+    dp._config['freqai']['feature_parameters']['indicator_periods_candles'][1] = 50
+    assert dp.get_required_startup('5m') == 5810
+    assert dp.get_required_startup('1h') == 530
+    assert dp.get_required_startup('1d') == 70
+
+    # scenario from issue https://github.com/freqtrade/freqtrade/issues/9432
+    dp._config['freqai'] = {
+        'enabled': True,
+        'train_period_days': 180,
+        'feature_parameters': {
+            'indicator_periods_candles': [
+                10,
+                20,
+            ]
+        }
+    }
+    dp._config['startup_candle_count'] = 40
+    assert dp.get_required_startup('5m') == 51880
+    assert dp.get_required_startup('1h') == 4360
+    assert dp.get_required_startup('1d') == 220
