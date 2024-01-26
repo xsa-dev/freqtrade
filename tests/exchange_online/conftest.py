@@ -14,14 +14,6 @@ EXCHANGE_FIXTURE_TYPE = Tuple[Exchange, str]
 
 # Exchanges that should be tested online
 EXCHANGES = {
-    'bittrex': {
-        'pair': 'BTC/USDT',
-        'stake_currency': 'USDT',
-        'hasQuoteVolume': False,
-        'timeframe': '1h',
-        'leverage_tiers_public': False,
-        'leverage_in_spot_market': False,
-    },
     'binance': {
         'pair': 'BTC/USDT',
         'stake_currency': 'USDT',
@@ -227,6 +219,7 @@ EXCHANGES = {
         'timeframe': '1h',
         'futures_pair': 'BTC/USDT:USDT',
         'futures': True,
+        'orderbook_max_entries': 50,
         'leverage_tiers_public': True,
         'leverage_in_spot_market': True,
         'sample_order': [
@@ -234,12 +227,12 @@ EXCHANGES = {
                 "orderId": "1274754916287346280",
                 "orderLinkId": "1666798627015730",
                 "symbol": "SOLUSDT",
-                "createTime": "1674493798550",
-                "orderPrice": "15.5",
-                "orderQty": "1.1",
-                "orderType": "LIMIT",
-                "side": "BUY",
-                "status": "NEW",
+                "createdTime": "1674493798550",
+                "price": "15.5",
+                "qty": "1.1",
+                "orderType": "Limit",
+                "side": "Buy",
+                "orderStatus": "New",
                 "timeInForce": "GTC",
                 "accountId": "5555555",
                 "execQty": "0",
@@ -247,7 +240,14 @@ EXCHANGES = {
             }
         ]
     },
-    'huobi': {
+    'bitmart': {
+        'pair': 'BTC/USDT',
+        'stake_currency': 'USDT',
+        'hasQuoteVolume': True,
+        'timeframe': '1h',
+        'orderbook_max_entries': 50,
+    },
+    'htx': {
         'pair': 'ETH/BTC',
         'stake_currency': 'BTC',
         'hasQuoteVolume': True,
