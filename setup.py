@@ -5,8 +5,8 @@ from setuptools import setup
 plot = ['plotly>=4.0']
 hyperopt = [
     'scipy',
-    'scikit-learn<=1.1.3',
-    'scikit-optimize>=0.7.0',
+    'scikit-learn',
+    'ft-scikit-optimize>=0.9.2',
     'filelock',
 ]
 
@@ -70,7 +70,7 @@ setup(
     ],
     install_requires=[
         # from requirements.txt
-        'ccxt>=3.0.0',
+        'ccxt>=4.2.15',
         'SQLAlchemy>=2.0.6',
         'python-telegram-bot>=20.1',
         'arrow>=1.0.0',
@@ -97,7 +97,7 @@ setup(
         'rich',
         'pyarrow; platform_machine != "armv7l"',
         'fastapi',
-        'pydantic>=1.8.0',
+        'pydantic>=2.2.0',
         'uvicorn',
         'psutil',
         'pyjwt',
@@ -122,4 +122,5 @@ setup(
         'freqai_rl': freqai_rl,
         'all': all_extra,
     },
+    url="https://github.com/freqtrade/freqtrade",
 )

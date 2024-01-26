@@ -20,8 +20,8 @@ from freqtrade.data.dataprovider import DataProvider
 from freqtrade.data.history import get_timerange
 from freqtrade.enums import CandleType, ExitType, RunMode
 from freqtrade.exceptions import DependencyException, OperationalException
-from freqtrade.exchange.exchange import timeframe_to_next_date
-from freqtrade.optimize.backtest_caching import get_strategy_run_id
+from freqtrade.exchange import timeframe_to_next_date, timeframe_to_prev_date
+from freqtrade.optimize.backtest_caching import get_backtest_metadata_filename, get_strategy_run_id
 from freqtrade.optimize.backtesting import Backtesting
 from freqtrade.persistence import LocalTrade, Trade
 from freqtrade.resolvers import StrategyResolver
@@ -549,6 +549,7 @@ def test_backtest__enter_trade_futures(default_conf_usdt, fee, mocker) -> None:
     default_conf_usdt['exchange']['pair_whitelist'] = ['.*']
     backtesting = Backtesting(default_conf_usdt)
     backtesting._set_strategy(backtesting.strategylist[0])
+    mocker.patch('freqtrade.optimize.backtesting.Backtesting._run_funding_fees')
     pair = 'ETH/USDT:USDT'
     row = [
         pd.Timestamp(year=2020, month=1, day=1, hour=5, minute=0),
@@ -601,6 +602,9 @@ def test_backtest__enter_trade_futures(default_conf_usdt, fee, mocker) -> None:
 
     trade = backtesting._enter_trade(pair, row=row, direction='short')
     assert pytest.approx(trade.liquidation_price) == 0.11787191
+    assert pytest.approx(trade.orders[0].cost) == (
+        trade.stake_amount * trade.leverage + trade.fee_open)
+    assert pytest.approx(trade.orders[-1].stake_amount) == trade.stake_amount
 
     # Stake-amount too high!
     mocker.patch(f"{EXMS}.get_min_pair_stake_amount", return_value=600.0)
@@ -662,7 +666,7 @@ def test_backtest__check_trade_exit(default_conf, fee, mocker) -> None:
     ]
 
     # No data available.
-    res = backtesting._check_trade_exit(trade, row_sell)
+    res = backtesting._check_trade_exit(trade, row_sell, row_sell[0].to_pydatetime())
     assert res is not None
     assert res.exit_reason == ExitType.ROI.value
     assert res.close_date_utc == datetime(2020, 1, 1, 5, 0, tzinfo=timezone.utc)
@@ -675,7 +679,7 @@ def test_backtest__check_trade_exit(default_conf, fee, mocker) -> None:
         [], columns=['date', 'open', 'high', 'low', 'close', 'enter_long', 'exit_long',
                      'enter_short', 'exit_short', 'long_tag', 'short_tag', 'exit_tag'])
 
-    res = backtesting._check_trade_exit(trade, row)
+    res = backtesting._check_trade_exit(trade, row, row[0].to_pydatetime())
     assert res is None
 
 
@@ -730,7 +734,7 @@ def test_backtest_one(default_conf, fee, mocker, testdatadir) -> None:
          'min_rate': [0.10370188, 0.10300000000000001],
          'max_rate': [0.10501, 0.1038888],
          'is_open': [False, False],
-         'enter_tag': [None, None],
+         'enter_tag': ['', ''],
          "leverage": [1.0, 1.0],
          "is_short": [False, False],
          'open_timestamp': [1517251200000, 1517283000000],
@@ -848,9 +852,13 @@ def test_backtest_one_detail(default_conf_usdt, fee, mocker, testdatadir, use_de
     assert late_entry > 0
 
 
-@pytest.mark.parametrize('use_detail', [True, False])
+@pytest.mark.parametrize('use_detail,exp_funding_fee, exp_ff_updates', [
+    (True, -0.018054162, 11),
+    (False, -0.01780296, 5),
+    ])
 def test_backtest_one_detail_futures(
-        default_conf_usdt, fee, mocker, testdatadir, use_detail) -> None:
+        default_conf_usdt, fee, mocker, testdatadir, use_detail, exp_funding_fee,
+        exp_ff_updates) -> None:
     default_conf_usdt['use_exit_signal'] = False
     default_conf_usdt['trading_mode'] = 'futures'
     default_conf_usdt['margin_mode'] = 'isolated'
@@ -879,6 +887,8 @@ def test_backtest_one_detail_futures(
     default_conf_usdt['max_open_trades'] = 10
 
     backtesting = Backtesting(default_conf_usdt)
+    ff_spy = mocker.spy(backtesting.exchange, 'calculate_funding_fees')
+
     backtesting._set_strategy(backtesting.strategylist[0])
     backtesting.strategy.populate_entry_trend = advise_entry
     backtesting.strategy.custom_entry_price = custom_entry_price
@@ -933,13 +943,22 @@ def test_backtest_one_detail_futures(
 
         assert (round(ln2.iloc[0]["low"], 6) <= round(
                 t["close_rate"], 6) <= round(ln2.iloc[0]["high"], 6))
-    assert -0.0181 < Trade.trades[1].funding_fees < -0.01
+    assert pytest.approx(Trade.trades[1].funding_fees) == exp_funding_fee
+    assert ff_spy.call_count == exp_ff_updates
     # assert late_entry > 0
 
 
-@pytest.mark.parametrize('use_detail', [True, False])
+@pytest.mark.parametrize('use_detail,entries,max_stake,ff_updates,expected_ff', [
+    (True, 50, 3000, 54, -1.18038144),
+    (False, 6, 360, 10, -0.14679994),
+])
 def test_backtest_one_detail_futures_funding_fees(
-        default_conf_usdt, fee, mocker, testdatadir, use_detail) -> None:
+        default_conf_usdt, fee, mocker, testdatadir, use_detail, entries, max_stake,
+        ff_updates, expected_ff,
+) -> None:
+    """
+    Funding fees are expected to differ, as the maximum position size differs.
+    """
     default_conf_usdt['use_exit_signal'] = False
     default_conf_usdt['trading_mode'] = 'futures'
     default_conf_usdt['margin_mode'] = 'isolated'
@@ -972,6 +991,7 @@ def test_backtest_one_detail_futures_funding_fees(
     default_conf_usdt['max_open_trades'] = 1
 
     backtesting = Backtesting(default_conf_usdt)
+    ff_spy = mocker.spy(backtesting.exchange, 'calculate_funding_fees')
     backtesting._set_strategy(backtesting.strategylist[0])
     backtesting.strategy.populate_entry_trend = advise_entry
     backtesting.strategy.adjust_trade_position = adjust_trade_position
@@ -997,13 +1017,18 @@ def test_backtest_one_detail_futures_funding_fees(
     assert len(results) == 1
 
     assert 'orders' in results.columns
+    # funding_fees have been calculated for each funding-fee candle
+    # the trade is open for 26 hours - hence we expect the 8h fee to apply 4 times.
+    # Additional counts will happen due each successful entry, which needs to call this, too.
+    assert ff_spy.call_count == ff_updates
 
     for t in Trade.trades:
-        # At least 4 adjustment orders
-        assert t.nr_of_successful_entries >= 6
+        # At least 6 adjustment orders
+        assert t.nr_of_successful_entries == entries
         # Funding fees will vary depending on the number of adjustment orders
         # That number is a lot higher with detail data.
-        assert -20 < t.funding_fees < -0.1
+        assert t.max_stake_amount == max_stake
+        assert pytest.approx(t.funding_fees) == expected_ff
 
 
 def test_backtest_timedout_entry_orders(default_conf, fee, mocker, testdatadir) -> None:
@@ -1107,6 +1132,7 @@ def test_processed(default_conf, mocker, testdatadir) -> None:
 def test_backtest_dataprovider_analyzed_df(default_conf, fee, mocker, testdatadir) -> None:
     default_conf['use_exit_signal'] = False
     default_conf['max_open_trades'] = 10
+    default_conf['runmode'] = 'backtest'
     mocker.patch(f'{EXMS}.get_fee', fee)
     mocker.patch(f"{EXMS}.get_min_pair_stake_amount", return_value=0.00001)
     mocker.patch(f"{EXMS}.get_max_pair_stake_amount", return_value=100000)
@@ -1119,10 +1145,10 @@ def test_backtest_dataprovider_analyzed_df(default_conf, fee, mocker, testdatadi
     processed = backtesting.strategy.advise_all_indicators(data)
     min_date, max_date = get_timerange(processed)
 
-    global count
     count = 0
 
     def tmp_confirm_entry(pair, current_time, **kwargs):
+        nonlocal count
         dp = backtesting.strategy.dp
         df, _ = dp.get_analyzed_dataframe(pair, backtesting.strategy.timeframe)
         current_candle = df.iloc[-1].squeeze()
@@ -1132,8 +1158,13 @@ def test_backtest_dataprovider_analyzed_df(default_conf, fee, mocker, testdatadi
         assert candle_date == current_time
         # These asserts don't properly raise as they are nested,
         # therefore we increment count and assert for that.
-        global count
-        count = count + 1
+        df = dp.get_pair_dataframe(pair, backtesting.strategy.timeframe)
+        prior_time = timeframe_to_prev_date(backtesting.strategy.timeframe,
+                                            candle_date - timedelta(seconds=1))
+        assert prior_time == df.iloc[-1].squeeze()['date']
+        assert df.iloc[-1].squeeze()['date'] < current_time
+
+        count += 1
 
     backtesting.strategy.confirm_trade_entry = tmp_confirm_entry
     backtesting.backtest(
@@ -1268,6 +1299,7 @@ def test_backtest_alternate_buy_sell(default_conf, fee, mocker, testdatadir):
     mocker.patch(f"{EXMS}.get_max_pair_stake_amount", return_value=float('inf'))
     mocker.patch(f'{EXMS}.get_fee', fee)
     default_conf['max_open_trades'] = 10
+    default_conf['runmode'] = 'backtest'
     backtest_conf = _make_backtest_conf(mocker, conf=default_conf,
                                         pair='UNITTEST/BTC', datadir=testdatadir)
     default_conf['timeframe'] = '1m'
@@ -1312,6 +1344,7 @@ def test_backtest_multi_pair(default_conf, fee, mocker, tres, pair, testdatadir)
         dataframe['exit_short'] = 0
         return dataframe
 
+    default_conf['runmode'] = 'backtest'
     mocker.patch(f"{EXMS}.get_min_pair_stake_amount", return_value=0.00001)
     mocker.patch(f"{EXMS}.get_max_pair_stake_amount", return_value=float('inf'))
     mocker.patch(f'{EXMS}.get_fee', fee)
@@ -1351,11 +1384,11 @@ def test_backtest_multi_pair(default_conf, fee, mocker, tres, pair, testdatadir)
 
     # Cached data correctly removed amounts
     offset = 1 if tres == 0 else 0
-    removed_candles = len(data[pair]) - offset - backtesting.strategy.startup_candle_count
+    removed_candles = len(data[pair]) - offset
     assert len(backtesting.dataprovider.get_analyzed_dataframe(pair, '5m')[0]) == removed_candles
     assert len(
         backtesting.dataprovider.get_analyzed_dataframe('NXT/BTC', '5m')[0]
-    ) == len(data['NXT/BTC']) - 1 - backtesting.strategy.startup_candle_count
+    ) == len(data['NXT/BTC']) - 1
 
     backtesting.strategy.max_open_trades = 1
     backtesting.config.update({'max_open_trades': 1})
@@ -1995,3 +2028,40 @@ def test_get_strategy_run_id(default_conf_usdt):
     strategy = StrategyResolver.load_strategy(default_conf_usdt)
     x = get_strategy_run_id(strategy)
     assert isinstance(x, str)
+
+
+def test_get_backtest_metadata_filename():
+    # Test with a file path
+    filename = Path('backtest_results.json')
+    expected = Path('backtest_results.meta.json')
+    assert get_backtest_metadata_filename(filename) == expected
+
+    # Test with a file path with multiple dots in the name
+    filename = Path('/path/to/backtest.results.json')
+    expected = Path('/path/to/backtest.results.meta.json')
+    assert get_backtest_metadata_filename(filename) == expected
+
+    # Test with a file path with no parent directory
+    filename = Path('backtest_results.json')
+    expected = Path('backtest_results.meta.json')
+    assert get_backtest_metadata_filename(filename) == expected
+
+    # Test with a string file path
+    filename = '/path/to/backtest_results.json'
+    expected = Path('/path/to/backtest_results.meta.json')
+    assert get_backtest_metadata_filename(filename) == expected
+
+    # Test with a string file path with no extension
+    filename = '/path/to/backtest_results'
+    expected = Path('/path/to/backtest_results.meta')
+    assert get_backtest_metadata_filename(filename) == expected
+
+    # Test with a string file path with multiple dots in the name
+    filename = '/path/to/backtest.results.json'
+    expected = Path('/path/to/backtest.results.meta.json')
+    assert get_backtest_metadata_filename(filename) == expected
+
+    # Test with a string file path with no parent directory
+    filename = 'backtest_results.json'
+    expected = Path('backtest_results.meta.json')
+    assert get_backtest_metadata_filename(filename) == expected
