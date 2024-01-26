@@ -105,7 +105,7 @@ SUPPORTED_FIAT = [
     "EUR", "GBP", "HKD", "HUF", "IDR", "ILS", "INR", "JPY",
     "KRW", "MXN", "MYR", "NOK", "NZD", "PHP", "PKR", "PLN",
     "RUB", "UAH", "SEK", "SGD", "THB", "TRY", "TWD", "ZAR",
-    "USD", "BTC", "ETH", "XRP", "LTC", "BCH"
+    "USD", "BTC", "ETH", "XRP", "LTC", "BCH", "BNB"
 ]
 
 MINIMAL_CONFIG = {
@@ -178,6 +178,11 @@ CONF_SCHEMA = {
         'minimum_trade_amount': {'type': 'number', 'default': 10},
         'targeted_trade_amount': {'type': 'number', 'default': 20},
         'lookahead_analysis_exportfilename': {'type': 'string'},
+        'startup_candle': {
+            'type': 'array',
+            'uniqueItems': True,
+            'default': [199, 399, 499, 999, 1999],
+        },
         'liquidation_buffer': {'type': 'number', 'minimum': 0.0, 'maximum': 0.99},
         'backtest_breakdown': {
             'type': 'array',
