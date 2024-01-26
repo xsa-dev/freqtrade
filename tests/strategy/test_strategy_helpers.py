@@ -12,9 +12,11 @@ from tests.conftest import generate_test_data, get_patched_exchange
 def test_merge_informative_pair():
     data = generate_test_data('15m', 40)
     informative = generate_test_data('1h', 40)
+    cols_inf = list(informative.columns)
 
     result = merge_informative_pair(data, informative, '15m', '1h', ffill=True)
     assert isinstance(result, pd.DataFrame)
+    assert list(informative.columns) == cols_inf
     assert len(result) == len(data)
     assert 'date' in result.columns
     assert result['date'].equals(data['date'])
@@ -61,6 +63,60 @@ def test_merge_informative_pair():
     assert result.iloc[8]['date_1h'] is pd.NaT
 
 
+def test_merge_informative_pair_weekly():
+    # Covers roughly 2 months - until 2023-01-10
+    data = generate_test_data('1h', 1040, '2022-11-28')
+    informative = generate_test_data('1w', 40, '2022-11-01')
+    informative['day'] = informative['date'].dt.day_name()
+
+    result = merge_informative_pair(data, informative, '1h', '1w', ffill=True)
+    assert isinstance(result, pd.DataFrame)
+    # 2022-12-24 is a Saturday
+    candle1 = result.loc[(result['date'] == '2022-12-24T22:00:00.000Z')]
+    assert candle1.iloc[0]['date'] == pd.Timestamp('2022-12-24T22:00:00.000Z')
+    assert candle1.iloc[0]['date_1w'] == pd.Timestamp('2022-12-12T00:00:00.000Z')
+
+    candle2 = result.loc[(result['date'] == '2022-12-24T23:00:00.000Z')]
+    assert candle2.iloc[0]['date'] == pd.Timestamp('2022-12-24T23:00:00.000Z')
+    assert candle2.iloc[0]['date_1w'] == pd.Timestamp('2022-12-12T00:00:00.000Z')
+
+    # 2022-12-25 is a Sunday
+    candle3 = result.loc[(result['date'] == '2022-12-25T22:00:00.000Z')]
+    assert candle3.iloc[0]['date'] == pd.Timestamp('2022-12-25T22:00:00.000Z')
+    # Still old candle
+    assert candle3.iloc[0]['date_1w'] == pd.Timestamp('2022-12-12T00:00:00.000Z')
+
+    candle4 = result.loc[(result['date'] == '2022-12-25T23:00:00.000Z')]
+    assert candle4.iloc[0]['date'] == pd.Timestamp('2022-12-25T23:00:00.000Z')
+    assert candle4.iloc[0]['date_1w'] == pd.Timestamp('2022-12-19T00:00:00.000Z')
+
+
+def test_merge_informative_pair_monthly():
+    # Covers roughly 2 months - until 2023-01-10
+    data = generate_test_data('1h', 1040, '2022-11-28')
+    informative = generate_test_data('1M', 40, '2022-01-01')
+
+    result = merge_informative_pair(data, informative, '1h', '1M', ffill=True)
+    assert isinstance(result, pd.DataFrame)
+    candle1 = result.loc[(result['date'] == '2022-12-31T22:00:00.000Z')]
+    assert candle1.iloc[0]['date'] == pd.Timestamp('2022-12-31T22:00:00.000Z')
+    assert candle1.iloc[0]['date_1M'] == pd.Timestamp('2022-11-01T00:00:00.000Z')
+
+    candle2 = result.loc[(result['date'] == '2022-12-31T23:00:00.000Z')]
+    assert candle2.iloc[0]['date'] == pd.Timestamp('2022-12-31T23:00:00.000Z')
+    assert candle2.iloc[0]['date_1M'] == pd.Timestamp('2022-12-01T00:00:00.000Z')
+
+    # Candle is empty, as the start-date did fail.
+    candle3 = result.loc[(result['date'] == '2022-11-30T22:00:00.000Z')]
+    assert candle3.iloc[0]['date'] == pd.Timestamp('2022-11-30T22:00:00.000Z')
+    assert candle3.iloc[0]['date_1M'] is pd.NaT
+
+    # First candle with 1M data merged.
+    candle4 = result.loc[(result['date'] == '2022-11-30T23:00:00.000Z')]
+    assert candle4.iloc[0]['date'] == pd.Timestamp('2022-11-30T23:00:00.000Z')
+    assert candle4.iloc[0]['date_1M'] == pd.Timestamp('2022-11-01T00:00:00.000Z')
+
+
 def test_merge_informative_pair_same():
     data = generate_test_data('15m', 40)
     informative = generate_test_data('15m', 40)
@@ -96,6 +152,32 @@ def test_merge_informative_pair_lower():
         merge_informative_pair(data, informative, '1h', '15m', ffill=True)
 
 
+def test_merge_informative_pair_empty():
+    data = generate_test_data('1h', 40)
+    informative = pd.DataFrame(columns=data.columns)
+
+    result = merge_informative_pair(data, informative, '1h', '2h', ffill=True)
+    assert result['date'].equals(data['date'])
+
+    assert list(result.columns) == [
+        'date',
+        'open',
+        'high',
+        'low',
+        'close',
+        'volume',
+        'date_2h',
+        'open_2h',
+        'high_2h',
+        'low_2h',
+        'close_2h',
+        'volume_2h'
+    ]
+    # We merge an empty dataframe, so all values should be NaN
+    for col in ['date_2h', 'open_2h', 'high_2h', 'low_2h', 'close_2h', 'volume_2h']:
+        assert result[col].isnull().all()
+
+
 def test_merge_informative_pair_suffix():
     data = generate_test_data('15m', 20)
     informative = generate_test_data('1h', 20)
@@ -109,6 +191,21 @@ def test_merge_informative_pair_suffix():
 
     assert 'open_suf' in result.columns
     assert 'open_1h' not in result.columns
+
+    assert list(result.columns) == [
+        'date',
+        'open',
+        'high',
+        'low',
+        'close',
+        'volume',
+        'date_suf',
+        'open_suf',
+        'high_suf',
+        'low_suf',
+        'close_suf',
+        'volume_suf'
+    ]
 
 
 def test_merge_informative_pair_suffix_append_timeframe():
@@ -211,15 +308,18 @@ def test_stoploss_from_absolute():
     assert pytest.approx(stoploss_from_absolute(110, 100)) == 0
     assert pytest.approx(stoploss_from_absolute(100, 0)) == 1
     assert pytest.approx(stoploss_from_absolute(0, 100)) == 1
+    assert pytest.approx(stoploss_from_absolute(0, 100, False, leverage=5)) == 5
 
     assert pytest.approx(stoploss_from_absolute(90, 100, True)) == 0
     assert pytest.approx(stoploss_from_absolute(100, 100, True)) == 0
     assert pytest.approx(stoploss_from_absolute(110, 100, True)) == -(1 - (110 / 100))
     assert pytest.approx(stoploss_from_absolute(110, 100, True)) == 0.1
     assert pytest.approx(stoploss_from_absolute(105, 100, True)) == 0.05
+    assert pytest.approx(stoploss_from_absolute(105, 100, True, 5)) == 0.05 * 5
     assert pytest.approx(stoploss_from_absolute(100, 0, True)) == 1
     assert pytest.approx(stoploss_from_absolute(0, 100, True)) == 0
-    assert pytest.approx(stoploss_from_absolute(100, 1, True)) == 1
+    assert pytest.approx(stoploss_from_absolute(100, 1, is_short=True)) == 1
+    assert pytest.approx(stoploss_from_absolute(100, 1, is_short=True, leverage=5)) == 5
 
 
 @pytest.mark.parametrize('trading_mode', ['futures', 'spot'])
@@ -233,9 +333,11 @@ def test_informative_decorator(mocker, default_conf_usdt, trading_mode):
         ('XRP/USDT', '5m', candle_def): test_data_5m,
         ('XRP/USDT', '30m', candle_def): test_data_30m,
         ('XRP/USDT', '1h', candle_def): test_data_1h,
+        ('XRP/BTC', '1h', candle_def): test_data_1h,  # from {base}/BTC
         ('LTC/USDT', '5m', candle_def): test_data_5m,
         ('LTC/USDT', '30m', candle_def): test_data_30m,
         ('LTC/USDT', '1h', candle_def): test_data_1h,
+        ('LTC/BTC', '1h', candle_def): test_data_1h,  # from {base}/BTC
         ('NEO/USDT', '30m', candle_def): test_data_30m,
         ('NEO/USDT', '5m', CandleType.SPOT): test_data_5m,  # Explicit request with '' as candletype
         ('NEO/USDT', '15m', candle_def): test_data_5m,  # Explicit request with '' as candletype
@@ -252,10 +354,12 @@ def test_informative_decorator(mocker, default_conf_usdt, trading_mode):
         'XRP/USDT', 'LTC/USDT', 'NEO/USDT'
     ])
 
-    assert len(strategy._ft_informative) == 6   # Equal to number of decorators used
+    assert len(strategy._ft_informative) == 7   # Equal to number of decorators used
     informative_pairs = [
         ('XRP/USDT', '1h', candle_def),
+        ('XRP/BTC', '1h', candle_def),
         ('LTC/USDT', '1h', candle_def),
+        ('LTC/BTC', '1h', candle_def),
         ('XRP/USDT', '30m', candle_def),
         ('LTC/USDT', '30m', candle_def),
         ('NEO/USDT', '1h', candle_def),

@@ -68,8 +68,10 @@ class Configuration:
         config: Config = load_from_files(self.args.get("config", []))
 
         # Load environment variables
-        env_data = enironment_vars_to_dict()
-        config = deep_merge_dicts(env_data, config)
+        from freqtrade.commands.arguments import NO_CONF_ALLOWED
+        if self.args.get('command') not in NO_CONF_ALLOWED:
+            env_data = enironment_vars_to_dict()
+            config = deep_merge_dicts(env_data, config)
 
         # Normalize config
         if 'internals' not in config:
@@ -489,6 +491,9 @@ class Configuration:
 
         self._args_to_config(config, argname='lookahead_analysis_exportfilename',
                              logstring='Path to store lookahead-analysis-results: {}')
+
+        self._args_to_config(config, argname='startup_candle',
+                             logstring='Startup candle to be used on recursive analysis: {}')
 
     def _process_runmode(self, config: Config) -> None:
 

@@ -20,7 +20,7 @@ Futures trading is supported for selected exchanges. Please refer to the [docume
 
 * When you work with your strategy & hyperopt file you should use a proper code editor like VSCode or PyCharm. A good code editor will provide syntax highlighting as well as line numbers, making it easy to find syntax errors (most likely pointed out by Freqtrade during startup).
 
-## Freqtrade common issues
+## Freqtrade common questions
 
 ### Can freqtrade open multiple positions on the same pair in parallel?
 
@@ -36,7 +36,7 @@ Running the bot with `freqtrade trade --config config.json` shows the output `fr
 This could be caused by the following reasons:
 
 * The virtual environment is not active.
-  * Run `source .env/bin/activate` to activate the virtual environment.
+  * Run `source .venv/bin/activate` to activate the virtual environment.
 * The installation did not complete successfully.
   * Please check the [Installation documentation](installation.md).
 
@@ -77,6 +77,14 @@ Leaving the dust (0.9 COIN) on the exchange makes usually sense, as the next tim
 Where possible (e.g. on binance), the use of the exchange's dedicated fee currency will fix this.
 On binance, it's sufficient to have BNB in your account, and have "Pay fees in BNB" enabled in your profile. Your BNB balance will slowly decline (as it's used to pay fees) - but you'll no longer encounter dust (Freqtrade will include the fees in the profit calculations).
 Other exchanges don't offer such possibilities, where it's simply something you'll have to accept or move to a different exchange.
+
+### I deposited more funds to the exchange, but my bot doesn't recognize this
+
+Freqtrade will update the exchange balance when necessary (Before placing an order).
+RPC calls (Telegram's `/balance`, API calls to `/balance`) can trigger an update at max. once per hour.
+
+If `adjust_trade_position` is enabled (and the bot has open trades eligible for position adjustments) - then the wallets will be refreshed once per hour.
+To force an immediate update, you can use `/reload_config` - which will restart the bot.
 
 ### I want to use incomplete candles
 
@@ -120,15 +128,9 @@ This warning can point to one of the below problems:
 * Barely traded pair -> Check the pair on the exchange webpage, look at the timeframe your strategy uses. If the pair does not have any volume in some candles (usually visualized with a "volume 0" bar, and a "_" as candle), this pair did not have any trades in this timeframe. These pairs should ideally be avoided, as they can cause problems with order-filling.
 * API problem -> API returns wrong data (this only here for completeness, and should not happen with supported exchanges).
 
-### I'm getting the "RESTRICTED_MARKET" message in the log
-
-Currently known to happen for US Bittrex users.
-
-Read [the Bittrex section about restricted markets](exchanges.md#restricted-markets) for more information.
-
 ### I'm getting the "Exchange XXX does not support market orders." message and cannot run my strategy
 
-As the message says, your exchange does not support market orders and you have one of the [order types](configuration.md/#understand-order_types) set to "market". Your strategy was probably written with other exchanges in mind and sets "market" orders for "stoploss" orders, which is correct and preferable for most of the exchanges supporting market orders (but not for Bittrex and Gate.io).
+As the message says, your exchange does not support market orders and you have one of the [order types](configuration.md/#understand-order_types) set to "market". Your strategy was probably written with other exchanges in mind and sets "market" orders for "stoploss" orders, which is correct and preferable for most of the exchanges supporting market orders (but not for Gate.io).
 
 To fix this, redefine order types in the strategy to use "limit" instead of "market":
 
