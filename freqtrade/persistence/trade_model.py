@@ -107,6 +107,11 @@ class Order(ModelBase):
         return self.amount or self.ft_amount
 
     @property
+    def safe_placement_price(self) -> float:
+        """Price at which the order was placed"""
+        return self.price or self.stop_price or self.ft_price
+
+    @property
     def safe_price(self) -> float:
         return self.average or self.price or self.stop_price or self.ft_price
 
@@ -146,7 +151,7 @@ class Order(ModelBase):
 
         return (f"Order(id={self.id}, trade={self.ft_trade_id}, order_id={self.order_id}, "
                 f"side={self.side}, filled={self.safe_filled}, price={self.safe_price}, "
-                f"status={self.status}, date={self.order_date:{DATETIME_PRINT_FORMAT}})")
+                f"status={self.status}, date={self.order_date_utc:{DATETIME_PRINT_FORMAT}})")
 
     def update_from_ccxt_object(self, order):
         """
@@ -156,20 +161,20 @@ class Order(ModelBase):
         if self.order_id != str(order['id']):
             raise DependencyException("Order-id's don't match")
 
-        self.status = order.get('status', self.status)
-        self.symbol = order.get('symbol', self.symbol)
-        self.order_type = order.get('type', self.order_type)
-        self.side = order.get('side', self.side)
-        self.price = order.get('price', self.price)
-        self.amount = order.get('amount', self.amount)
-        self.filled = order.get('filled', self.filled)
-        self.average = order.get('average', self.average)
-        self.remaining = order.get('remaining', self.remaining)
-        self.cost = order.get('cost', self.cost)
-        self.stop_price = order.get('stopPrice', self.stop_price)
-
-        if 'timestamp' in order and order['timestamp'] is not None:
-            self.order_date = datetime.fromtimestamp(order['timestamp'] / 1000, tz=timezone.utc)
+        self.status = safe_value_fallback(order, 'status', default_value=self.status)
+        self.symbol = safe_value_fallback(order, 'symbol', default_value=self.symbol)
+        self.order_type = safe_value_fallback(order, 'type', default_value=self.order_type)
+        self.side = safe_value_fallback(order, 'side', default_value=self.side)
+        self.price = safe_value_fallback(order, 'price', default_value=self.price)
+        self.amount = safe_value_fallback(order, 'amount', default_value=self.amount)
+        self.filled = safe_value_fallback(order, 'filled', default_value=self.filled)
+        self.average = safe_value_fallback(order, 'average', default_value=self.average)
+        self.remaining = safe_value_fallback(order, 'remaining', default_value=self.remaining)
+        self.cost = safe_value_fallback(order, 'cost', default_value=self.cost)
+        self.stop_price = safe_value_fallback(order, 'stopPrice', default_value=self.stop_price)
+        order_date = safe_value_fallback(order, 'timestamp')
+        if order_date:
+            self.order_date = datetime.fromtimestamp(order_date / 1000, tz=timezone.utc)
 
         self.ft_is_open = True
         if self.status in NON_OPEN_EXCHANGE_STATES:
@@ -536,12 +541,15 @@ class LocalTrade:
         for key in kwargs:
             setattr(self, key, kwargs[key])
         self.recalc_open_trade_value()
+        self.orders = []
         if self.trading_mode == TradingMode.MARGIN and self.interest_rate is None:
             raise OperationalException(
                 f"{self.trading_mode.value} trading requires param interest_rate on trades")
 
     def __repr__(self):
-        open_since = self.open_date.strftime(DATETIME_PRINT_FORMAT) if self.is_open else 'closed'
+        open_since = (
+            self.open_date_utc.strftime(DATETIME_PRINT_FORMAT) if self.is_open else 'closed'
+        )
 
         return (
             f'Trade(id={self.id}, pair={self.pair}, amount={self.amount:.8f}, '
@@ -1052,7 +1060,7 @@ class LocalTrade:
                 price = avg_price if is_exit else tmp_price
                 current_stake += price * tmp_amount * side
 
-                if current_amount > ZERO:
+                if current_amount > ZERO and not is_exit:
                     avg_price = current_stake / current_amount
 
             if is_exit:
@@ -1065,7 +1073,10 @@ class LocalTrade:
                 exit_amount = o.safe_amount_after_fee
                 prof = self.calculate_profit(exit_rate, exit_amount, float(avg_price))
                 close_profit_abs += prof.profit_abs
-                close_profit = prof.profit_ratio
+                if total_stake > 0:
+                    # This needs to be calculated based on the last occuring exit to be aligned
+                    # with realized_profit.
+                    close_profit = (close_profit_abs / total_stake) * self.leverage
             else:
                 total_stake = total_stake + self._calc_open_trade_value(tmp_amount, price)
                 max_stake_amount += (tmp_amount * price)
@@ -1599,7 +1610,7 @@ class Trade(ModelBase, LocalTrade):
         :return: unsorted query object
         """
         query = Trade.get_trades_query(trade_filter, include_orders)
-        # this sholud remain split. if use_db is False, session is not available and the above will
+        # this should remain split. if use_db is False, session is not available and the above will
         # raise an exception.
         return Trade.session.scalars(query)
 
@@ -1631,7 +1642,7 @@ class Trade(ModelBase, LocalTrade):
         Retrieves total realized profit
         """
         if Trade.use_db:
-            total_profit: float = Trade.session.execute(
+            total_profit = Trade.session.execute(
                 select(func.sum(Trade.close_profit_abs)).filter(Trade.is_open.is_(False))
             ).scalar_one()
         else:
@@ -1779,7 +1790,7 @@ class Trade(ModelBase, LocalTrade):
             .order_by(desc('profit_sum_abs'))
         ).all()
 
-        return_list: List[Dict] = []
+        resp: List[Dict] = []
         for id, enter_tag, exit_reason, profit, profit_abs, count in mix_tag_perf:
             enter_tag = enter_tag if enter_tag is not None else "Other"
             exit_reason = exit_reason if exit_reason is not None else "Other"
@@ -1787,24 +1798,25 @@ class Trade(ModelBase, LocalTrade):
             if (exit_reason is not None and enter_tag is not None):
                 mix_tag = enter_tag + " " + exit_reason
                 i = 0
-                if not any(item["mix_tag"] == mix_tag for item in return_list):
-                    return_list.append({'mix_tag': mix_tag,
-                                        'profit': profit,
-                                        'profit_pct': round(profit * 100, 2),
-                                        'profit_abs': profit_abs,
-                                        'count': count})
+                if not any(item["mix_tag"] == mix_tag for item in resp):
+                    resp.append({'mix_tag': mix_tag,
+                                 'profit_ratio': profit,
+                                 'profit_pct': round(profit * 100, 2),
+                                 'profit_abs': profit_abs,
+                                 'count': count})
                 else:
-                    while i < len(return_list):
-                        if return_list[i]["mix_tag"] == mix_tag:
-                            return_list[i] = {
+                    while i < len(resp):
+                        if resp[i]["mix_tag"] == mix_tag:
+                            resp[i] = {
                                 'mix_tag': mix_tag,
-                                'profit': profit + return_list[i]["profit"],
-                                'profit_pct': round(profit + return_list[i]["profit"] * 100, 2),
-                                'profit_abs': profit_abs + return_list[i]["profit_abs"],
-                                'count': 1 + return_list[i]["count"]}
+                                'profit_ratio': profit + resp[i]["profit_ratio"],
+                                'profit_pct': round(profit + resp[i]["profit_ratio"] * 100, 2),
+                                'profit_abs': profit_abs + resp[i]["profit_abs"],
+                                'count': 1 + resp[i]["count"]
+                            }
                         i += 1
 
-        return return_list
+        return resp
 
     @staticmethod
     def get_best_pair(start_date: datetime = datetime.fromtimestamp(0)):
@@ -1838,4 +1850,4 @@ class Trade(ModelBase, LocalTrade):
                 Order.order_filled_date >= start_date,
                 Order.status == 'closed'
             )).scalar_one()
-        return trading_volume
+        return trading_volume or 0.0

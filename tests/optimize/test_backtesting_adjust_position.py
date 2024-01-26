@@ -72,7 +72,7 @@ def test_backtest_position_adjustment(default_conf, fee, mocker, testdatadir) ->
          'min_rate': [0.10370188, 0.10300000000000001],
          'max_rate': [0.10481985, 0.1038888],
          'is_open': [False, False],
-         'enter_tag': [None, None],
+         'enter_tag': ['', ''],
          'leverage': [1.0, 1.0],
          'is_short': [False, False],
          'open_timestamp': [1517251200000, 1517283000000],
@@ -104,6 +104,7 @@ def test_backtest_position_adjustment_detailed(default_conf, fee, mocker, levera
     mocker.patch(f"{EXMS}.get_max_pair_stake_amount", return_value=float('inf'))
     mocker.patch(f"{EXMS}.get_max_leverage", return_value=10)
     mocker.patch(f"{EXMS}.get_maintenance_ratio_and_amt", return_value=(0.1, 0.1))
+    mocker.patch('freqtrade.optimize.backtesting.Backtesting._run_funding_fees')
 
     patch_exchange(mocker)
     default_conf.update({
