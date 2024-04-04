@@ -3,20 +3,22 @@
 
 import logging
 import math
+from datetime import timedelta
 from unittest.mock import MagicMock
 
-import arrow
 import numpy as np
 import pytest
-from pandas import DataFrame, to_datetime
+from pandas import DataFrame
 
-from freqtrade.exceptions import OperationalException
 from freqtrade.data.converter import ohlcv_to_dataframe
 from freqtrade.edge import Edge, PairInfo
-from freqtrade.strategy.interface import SellType
-from tests.conftest import get_patched_freqtradebot, log_has
+from freqtrade.enums import ExitType
+from freqtrade.exceptions import OperationalException
+from freqtrade.util.datetime_helpers import dt_ts, dt_utc
+from tests.conftest import EXMS, get_patched_freqtradebot, log_has
 from tests.optimize import (BTContainer, BTrade, _build_backtest_dataframe,
                             _get_frame_time_from_offset)
+
 
 # Cases to be tested:
 # 1) Open trade should be removed from the end
@@ -26,52 +28,8 @@ from tests.optimize import (BTContainer, BTrade, _build_backtest_dataframe,
 # 5) Stoploss and sell are hit. should sell on stoploss
 ####################################################################
 
-tests_start_time = arrow.get(2018, 10, 3)
+tests_start_time = dt_utc(2018, 10, 3)
 timeframe_in_minute = 60
-_ohlc = {'date': 0, 'buy': 1, 'open': 2, 'high': 3, 'low': 4, 'close': 5, 'sell': 6, 'volume': 7}
-
-# Helpers for this test file
-
-
-def _validate_ohlc(buy_ohlc_sell_matrice):
-    for index, ohlc in enumerate(buy_ohlc_sell_matrice):
-        # if not high < open < low or not high < close < low
-        if not ohlc[3] >= ohlc[2] >= ohlc[4] or not ohlc[3] >= ohlc[5] >= ohlc[4]:
-            raise Exception('Line ' + str(index + 1) + ' of ohlc has invalid values!')
-    return True
-
-
-def _build_dataframe(buy_ohlc_sell_matrice):
-    _validate_ohlc(buy_ohlc_sell_matrice)
-    data = []
-    for ohlc in buy_ohlc_sell_matrice:
-        d = {
-            'date': tests_start_time.shift(
-                minutes=(
-                    ohlc[0] *
-                    timeframe_in_minute)).timestamp *
-            1000,
-            'buy': ohlc[1],
-            'open': ohlc[2],
-            'high': ohlc[3],
-            'low': ohlc[4],
-            'close': ohlc[5],
-            'sell': ohlc[6]}
-        data.append(d)
-
-    frame = DataFrame(data)
-    frame['date'] = to_datetime(frame['date'],
-                                unit='ms',
-                                utc=True,
-                                infer_datetime_format=True)
-
-    return frame
-
-
-def _time_on_candle(number):
-    return np.datetime64(tests_start_time.shift(
-        minutes=(number * timeframe_in_minute)).timestamp * 1000, 'ms')
-
 
 # End helper functions
 # Open trade should be removed from the end
@@ -95,8 +53,8 @@ tc1 = BTContainer(data=[
     [6, 5000, 5025, 4975, 4987, 6172, 0, 0],  # should sell
 ],
     stop_loss=-0.99, roi={"0": float('inf')}, profit_perc=0.00,
-    trades=[BTrade(sell_reason=SellType.SELL_SIGNAL, open_tick=1, close_tick=2),
-            BTrade(sell_reason=SellType.SELL_SIGNAL, open_tick=4, close_tick=6)]
+    trades=[BTrade(exit_reason=ExitType.EXIT_SIGNAL, open_tick=1, close_tick=2),
+            BTrade(exit_reason=ExitType.EXIT_SIGNAL, open_tick=4, close_tick=6)]
 )
 
 # 3) Entered, sl 1%, candle drops 8% => Trade closed, 1% loss
@@ -107,7 +65,7 @@ tc2 = BTContainer(data=[
     [2, 5000, 5025, 4975, 4987, 6172, 0, 0],
 ],
     stop_loss=-0.01, roi={"0": float('inf')}, profit_perc=-0.01,
-    trades=[BTrade(sell_reason=SellType.STOP_LOSS, open_tick=1, close_tick=1)]
+    trades=[BTrade(exit_reason=ExitType.STOP_LOSS, open_tick=1, close_tick=1)]
 )
 
 # 4) Entered, sl 3 %, candle drops 4%, recovers to 1 % = > Trade closed, 3 % loss
@@ -118,7 +76,7 @@ tc3 = BTContainer(data=[
     [2, 5000, 5025, 4975, 4987, 6172, 0, 0],
 ],
     stop_loss=-0.03, roi={"0": float('inf')}, profit_perc=-0.03,
-    trades=[BTrade(sell_reason=SellType.STOP_LOSS, open_tick=1, close_tick=1)]
+    trades=[BTrade(exit_reason=ExitType.STOP_LOSS, open_tick=1, close_tick=1)]
 )
 
 # 5) Stoploss and sell are hit. should sell on stoploss
@@ -129,7 +87,7 @@ tc4 = BTContainer(data=[
     [2, 5000, 5025, 4975, 4987, 6172, 0, 0],
 ],
     stop_loss=-0.03, roi={"0": float('inf')}, profit_perc=-0.03,
-    trades=[BTrade(sell_reason=SellType.STOP_LOSS, open_tick=1, close_tick=1)]
+    trades=[BTrade(exit_reason=ExitType.STOP_LOSS, open_tick=1, close_tick=1)]
 )
 
 TESTS = [
@@ -162,7 +120,7 @@ def test_edge_results(edge_conf, mocker, caplog, data) -> None:
 
     for c, trade in enumerate(data.trades):
         res = results.iloc[c]
-        assert res.exit_type == trade.sell_reason
+        assert res.exit_type == trade.exit_reason
         assert res.open_date == _get_frame_time_from_offset(trade.open_tick).replace(tzinfo=None)
         assert res.close_date == _get_frame_time_from_offset(trade.close_tick).replace(tzinfo=None)
 
@@ -179,10 +137,10 @@ def test_adjust(mocker, edge_conf):
     ))
 
     pairs = ['A/B', 'C/D', 'E/F', 'G/H']
-    assert(edge.adjust(pairs) == ['E/F', 'C/D'])
+    assert (edge.adjust(pairs) == ['E/F', 'C/D'])
 
 
-def test_stoploss(mocker, edge_conf):
+def test_edge_get_stoploss(mocker, edge_conf):
     freqtrade = get_patched_freqtradebot(mocker, edge_conf)
     edge = Edge(edge_conf, freqtrade.exchange, freqtrade.strategy)
     mocker.patch('freqtrade.edge.Edge._cached_pairs', mocker.PropertyMock(
@@ -193,10 +151,10 @@ def test_stoploss(mocker, edge_conf):
         }
     ))
 
-    assert edge.stoploss('E/F') == -0.01
+    assert edge.get_stoploss('E/F') == -0.01
 
 
-def test_nonexisting_stoploss(mocker, edge_conf):
+def test_nonexisting_get_stoploss(mocker, edge_conf):
     freqtrade = get_patched_freqtradebot(mocker, edge_conf)
     edge = Edge(edge_conf, freqtrade.exchange, freqtrade.strategy)
     mocker.patch('freqtrade.edge.Edge._cached_pairs', mocker.PropertyMock(
@@ -205,10 +163,10 @@ def test_nonexisting_stoploss(mocker, edge_conf):
         }
     ))
 
-    assert edge.stoploss('N/O') == -0.1
+    assert edge.get_stoploss('N/O') == -0.1
 
 
-def test_stake_amount(mocker, edge_conf):
+def test_edge_stake_amount(mocker, edge_conf):
     freqtrade = get_patched_freqtradebot(mocker, edge_conf)
     edge = Edge(edge_conf, freqtrade.exchange, freqtrade.strategy)
     mocker.patch('freqtrade.edge.Edge._cached_pairs', mocker.PropertyMock(
@@ -216,20 +174,33 @@ def test_stake_amount(mocker, edge_conf):
             'E/F': PairInfo(-0.02, 0.66, 3.71, 0.50, 1.71, 10, 60),
         }
     ))
-    free = 100
-    total = 100
-    in_trade = 25
-    assert edge.stake_amount('E/F', free, total, in_trade) == 31.25
+    assert edge._capital_ratio == 0.5
+    assert edge.stake_amount('E/F', free_capital=100, total_capital=100,
+                             capital_in_trade=25) == 31.25
 
-    free = 20
-    total = 100
-    in_trade = 25
-    assert edge.stake_amount('E/F', free, total, in_trade) == 20
+    assert edge.stake_amount('E/F', free_capital=20, total_capital=100,
+                             capital_in_trade=25) == 20
 
-    free = 0
-    total = 100
-    in_trade = 25
-    assert edge.stake_amount('E/F', free, total, in_trade) == 0
+    assert edge.stake_amount('E/F', free_capital=0, total_capital=100,
+                             capital_in_trade=25) == 0
+
+    # Test with increased allowed_risk
+    # Result should be no more than allowed capital
+    edge._allowed_risk = 0.4
+    edge._capital_ratio = 0.5
+    assert edge.stake_amount('E/F', free_capital=100, total_capital=100,
+                             capital_in_trade=25) == 62.5
+
+    assert edge.stake_amount('E/F', free_capital=100, total_capital=100,
+                             capital_in_trade=0) == 50
+
+    edge._capital_ratio = 1
+    # Full capital is available
+    assert edge.stake_amount('E/F', free_capital=100, total_capital=100,
+                             capital_in_trade=0) == 100
+    # Full capital is available
+    assert edge.stake_amount('E/F', free_capital=0, total_capital=100,
+                             capital_in_trade=0) == 0
 
 
 def test_nonexisting_stake_amount(mocker, edge_conf):
@@ -250,9 +221,9 @@ def test_edge_heartbeat_calculate(mocker, edge_conf):
     heartbeat = edge_conf['edge']['process_throttle_secs']
 
     # should not recalculate if heartbeat not reached
-    edge._last_updated = arrow.utcnow().timestamp - heartbeat + 1
+    edge._last_updated = dt_ts() - heartbeat + 1
 
-    assert edge.calculate() is False
+    assert edge.calculate(edge_conf['exchange']['pair_whitelist']) is False
 
 
 def mocked_load_data(datadir, pairs=[], timeframe='0m',
@@ -262,7 +233,7 @@ def mocked_load_data(datadir, pairs=[], timeframe='0m',
 
     NEOBTC = [
         [
-            tests_start_time.shift(minutes=(x * timeframe_in_minute)).timestamp * 1000,
+            dt_ts(tests_start_time + timedelta(minutes=(x * timeframe_in_minute))),
             math.sin(x * hz) / 1000 + base,
             math.sin(x * hz) / 1000 + base + 0.0001,
             math.sin(x * hz) / 1000 + base - 0.0001,
@@ -274,7 +245,7 @@ def mocked_load_data(datadir, pairs=[], timeframe='0m',
     base = 0.002
     LTCBTC = [
         [
-            tests_start_time.shift(minutes=(x * timeframe_in_minute)).timestamp * 1000,
+            dt_ts(tests_start_time + timedelta(minutes=(x * timeframe_in_minute))),
             math.sin(x * hz) / 1000 + base,
             math.sin(x * hz) / 1000 + base + 0.0001,
             math.sin(x * hz) / 1000 + base - 0.0001,
@@ -291,24 +262,24 @@ def mocked_load_data(datadir, pairs=[], timeframe='0m',
 
 def test_edge_process_downloaded_data(mocker, edge_conf):
     freqtrade = get_patched_freqtradebot(mocker, edge_conf)
-    mocker.patch('freqtrade.exchange.Exchange.get_fee', MagicMock(return_value=0.001))
+    mocker.patch(f'{EXMS}.get_fee', MagicMock(return_value=0.001))
     mocker.patch('freqtrade.edge.edge_positioning.refresh_data', MagicMock())
     mocker.patch('freqtrade.edge.edge_positioning.load_data', mocked_load_data)
     edge = Edge(edge_conf, freqtrade.exchange, freqtrade.strategy)
 
-    assert edge.calculate()
+    assert edge.calculate(edge_conf['exchange']['pair_whitelist'])
     assert len(edge._cached_pairs) == 2
-    assert edge._last_updated <= arrow.utcnow().timestamp + 2
+    assert edge._last_updated <= dt_ts() + 2
 
 
 def test_edge_process_no_data(mocker, edge_conf, caplog):
     freqtrade = get_patched_freqtradebot(mocker, edge_conf)
-    mocker.patch('freqtrade.exchange.Exchange.get_fee', MagicMock(return_value=0.001))
+    mocker.patch(f'{EXMS}.get_fee', MagicMock(return_value=0.001))
     mocker.patch('freqtrade.edge.edge_positioning.refresh_data', MagicMock())
     mocker.patch('freqtrade.edge.edge_positioning.load_data', MagicMock(return_value={}))
     edge = Edge(edge_conf, freqtrade.exchange, freqtrade.strategy)
 
-    assert not edge.calculate()
+    assert not edge.calculate(edge_conf['exchange']['pair_whitelist'])
     assert len(edge._cached_pairs) == 0
     assert log_has("No data found. Edge is stopped ...", caplog)
     assert edge._last_updated == 0
@@ -316,21 +287,40 @@ def test_edge_process_no_data(mocker, edge_conf, caplog):
 
 def test_edge_process_no_trades(mocker, edge_conf, caplog):
     freqtrade = get_patched_freqtradebot(mocker, edge_conf)
-    mocker.patch('freqtrade.exchange.Exchange.get_fee', MagicMock(return_value=0.001))
-    mocker.patch('freqtrade.edge.edge_positioning.refresh_data', MagicMock())
+    mocker.patch(f'{EXMS}.get_fee', return_value=0.001)
+    mocker.patch('freqtrade.edge.edge_positioning.refresh_data', )
     mocker.patch('freqtrade.edge.edge_positioning.load_data', mocked_load_data)
     # Return empty
-    mocker.patch('freqtrade.edge.Edge._find_trades_for_stoploss_range', MagicMock(return_value=[]))
+    mocker.patch('freqtrade.edge.Edge._find_trades_for_stoploss_range', return_value=[])
     edge = Edge(edge_conf, freqtrade.exchange, freqtrade.strategy)
 
-    assert not edge.calculate()
+    assert not edge.calculate(edge_conf['exchange']['pair_whitelist'])
     assert len(edge._cached_pairs) == 0
     assert log_has("No trades found.", caplog)
 
 
+def test_edge_process_no_pairs(mocker, edge_conf, caplog):
+    edge_conf['exchange']['pair_whitelist'] = []
+    mocker.patch('freqtrade.freqtradebot.validate_config_consistency')
+
+    freqtrade = get_patched_freqtradebot(mocker, edge_conf)
+    fee_mock = mocker.patch(f'{EXMS}.get_fee', return_value=0.001)
+    mocker.patch('freqtrade.edge.edge_positioning.refresh_data')
+    mocker.patch('freqtrade.edge.edge_positioning.load_data', mocked_load_data)
+    # Return empty
+    mocker.patch('freqtrade.edge.Edge._find_trades_for_stoploss_range', return_value=[])
+    edge = Edge(edge_conf, freqtrade.exchange, freqtrade.strategy)
+    assert fee_mock.call_count == 0
+    assert edge.fee is None
+
+    assert not edge.calculate(['XRP/USDT'])
+    assert fee_mock.call_count == 1
+    assert edge.fee == 0.001
+
+
 def test_edge_init_error(mocker, edge_conf,):
     edge_conf['stake_amount'] = 0.5
-    mocker.patch('freqtrade.exchange.Exchange.get_fee', MagicMock(return_value=0.001))
+    mocker.patch(f'{EXMS}.get_fee', MagicMock(return_value=0.001))
     with pytest.raises(OperationalException,  match='Edge works only with unlimited stake amount'):
         get_patched_freqtradebot(mocker, edge_conf)
 
@@ -359,7 +349,7 @@ def test_process_expectancy(mocker, edge_conf, fee, risk_reward_ratio, expectanc
          'trade_duration': '',
          'open_rate': 17,
          'close_rate': 17,
-         'exit_type': 'sell_signal'},
+         'exit_type': 'exit_signal'},
 
         {'pair': 'TEST/BTC',
          'stoploss': -0.9,
@@ -370,7 +360,7 @@ def test_process_expectancy(mocker, edge_conf, fee, risk_reward_ratio, expectanc
          'trade_duration': '',
          'open_rate': 20,
          'close_rate': 20,
-         'exit_type': 'sell_signal'},
+         'exit_type': 'exit_signal'},
 
         {'pair': 'TEST/BTC',
          'stoploss': -0.9,
@@ -381,7 +371,7 @@ def test_process_expectancy(mocker, edge_conf, fee, risk_reward_ratio, expectanc
          'trade_duration': '',
          'open_rate': 26,
          'close_rate': 34,
-         'exit_type': 'sell_signal'}
+         'exit_type': 'exit_signal'}
     ]
 
     trades_df = DataFrame(trades)
@@ -498,3 +488,61 @@ def test_process_expectancy_remove_pumps(mocker, edge_conf, fee,):
     assert final['TEST/BTC'].stoploss == -0.9
     assert final['TEST/BTC'].nb_trades == len(trades_df) - 1
     assert round(final['TEST/BTC'].winrate, 10) == 0.0
+
+
+def test_process_expectancy_only_wins(mocker, edge_conf, fee,):
+    edge_conf['edge']['min_trade_number'] = 2
+    freqtrade = get_patched_freqtradebot(mocker, edge_conf)
+
+    freqtrade.exchange.get_fee = fee
+    edge = Edge(edge_conf, freqtrade.exchange, freqtrade.strategy)
+
+    trades = [
+        {'pair': 'TEST/BTC',
+         'stoploss': -0.9,
+         'profit_percent': '',
+         'profit_abs': '',
+         'open_date': np.datetime64('2018-10-03T00:05:00.000000000'),
+         'close_date': np.datetime64('2018-10-03T00:10:00.000000000'),
+         'open_index': 1,
+         'close_index': 1,
+         'trade_duration': '',
+         'open_rate': 15,
+         'close_rate': 17,
+         'exit_type': 'sell_signal'},
+        {'pair': 'TEST/BTC',
+         'stoploss': -0.9,
+         'profit_percent': '',
+         'profit_abs': '',
+         'open_date': np.datetime64('2018-10-03T00:20:00.000000000'),
+         'close_date': np.datetime64('2018-10-03T00:25:00.000000000'),
+         'open_index': 4,
+         'close_index': 4,
+         'trade_duration': '',
+         'open_rate': 10,
+         'close_rate': 20,
+         'exit_type': 'sell_signal'},
+        {'pair': 'TEST/BTC',
+         'stoploss': -0.9,
+         'profit_percent': '',
+         'profit_abs': '',
+         'open_date': np.datetime64('2018-10-03T00:30:00.000000000'),
+         'close_date': np.datetime64('2018-10-03T00:40:00.000000000'),
+         'open_index': 6,
+         'close_index': 7,
+         'trade_duration': '',
+         'open_rate': 26,
+         'close_rate': 134,
+         'exit_type': 'sell_signal'}
+    ]
+
+    trades_df = DataFrame(trades)
+    trades_df = edge._fill_calculable_fields(trades_df)
+    final = edge._process_expectancy(trades_df)
+
+    assert 'TEST/BTC' in final
+    assert final['TEST/BTC'].stoploss == -0.9
+    assert final['TEST/BTC'].nb_trades == len(trades_df)
+    assert round(final['TEST/BTC'].winrate, 10) == 1.0
+    assert round(final['TEST/BTC'].risk_reward_ratio, 10) == float('inf')
+    assert round(final['TEST/BTC'].expectancy, 10) == float('inf')

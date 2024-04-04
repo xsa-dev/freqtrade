@@ -2,95 +2,108 @@ import asyncio
 import logging
 import time
 from functools import wraps
+from typing import Any, Callable, Dict, List, Optional, TypeVar, cast, overload
 
-from freqtrade.exceptions import (DDosProtection, RetryableOrderError,
-                                  TemporaryError)
+from freqtrade.constants import ExchangeConfig
+from freqtrade.exceptions import DDosProtection, RetryableOrderError, TemporaryError
+from freqtrade.mixins import LoggingMixin
+
 
 logger = logging.getLogger(__name__)
+__logging_mixin = None
 
 
+def _reset_logging_mixin():
+    """
+    Reset global logging mixin - used in tests only.
+    """
+    global __logging_mixin
+    __logging_mixin = LoggingMixin(logger)
+
+
+def _get_logging_mixin():
+    # Logging-mixin to cache kucoin responses
+    # Only to be used in retrier
+    global __logging_mixin
+    if not __logging_mixin:
+        __logging_mixin = LoggingMixin(logger)
+    return __logging_mixin
+
+
+# Maximum default retry count.
+# Functions are always called RETRY_COUNT + 1 times (for the original call)
 API_RETRY_COUNT = 4
+API_FETCH_ORDER_RETRY_COUNT = 5
+
 BAD_EXCHANGES = {
     "bitmex": "Various reasons.",
-    "bitstamp": "Does not provide history. "
-                "Details in https://github.com/freqtrade/freqtrade/issues/1983",
-    "hitbtc": "This API cannot be used with Freqtrade. "
-              "Use `hitbtc2` exchange id to access this exchange.",
-    "phemex": "Does not provide history. ",
-    **dict.fromkeys([
-        'adara',
-        'anxpro',
-        'bigone',
-        'coinbase',
-        'coinexchange',
-        'coinmarketcap',
-        'lykke',
-        'xbtce',
-    ], "Does not provide timeframes. ccxt fetchOHLCV: False"),
-    **dict.fromkeys([
-        'bcex',
-        'bit2c',
-        'bitbay',
-        'bitflyer',
-        'bitforex',
-        'bithumb',
-        'bitso',
-        'bitstamp1',
-        'bl3p',
-        'braziliex',
-        'btcbox',
-        'btcchina',
-        'btctradeim',
-        'btctradeua',
-        'bxinth',
-        'chilebit',
-        'coincheck',
-        'coinegg',
-        'coinfalcon',
-        'coinfloor',
-        'coingi',
-        'coinmate',
-        'coinone',
-        'coinspot',
-        'coolcoin',
-        'crypton',
-        'deribit',
-        'exmo',
-        'exx',
-        'flowbtc',
-        'foxbit',
-        'fybse',
-        # 'hitbtc',
-        'ice3x',
-        'independentreserve',
-        'indodax',
-        'itbit',
-        'lakebtc',
-        'latoken',
-        'liquid',
-        'livecoin',
-        'luno',
-        'mixcoins',
-        'negociecoins',
-        'nova',
-        'paymium',
-        'southxchange',
-        'stronghold',
-        'surbitcoin',
-        'therock',
-        'tidex',
-        'vaultoro',
-        'vbtc',
-        'virwox',
-        'yobit',
-        'zaif',
-    ], "Does not provide timeframes. ccxt fetchOHLCV: emulated"),
+    "phemex": "Does not provide history.",
+    "probit": "Requires additional, regular calls to `signIn()`.",
+    "poloniex": "Does not provide fetch_order endpoint to fetch both open and closed orders.",
 }
 
 MAP_EXCHANGE_CHILDCLASS = {
     'binanceus': 'binance',
     'binanceje': 'binance',
+    'binanceusdm': 'binance',
+    'okex': 'okx',
+    'gateio': 'gate',
+    'huboi': 'htx',
 }
+
+SUPPORTED_EXCHANGES = [
+    'binance',
+    'bitmart',
+    'gate',
+    'htx',
+    'kraken',
+    'okx',
+]
+
+# either the main, or replacement methods (array) is required
+EXCHANGE_HAS_REQUIRED: Dict[str, List[str]] = {
+    # Required / private
+    'fetchOrder': ['fetchOpenOrder', 'fetchClosedOrder'],
+    'cancelOrder': [],
+    'createOrder': [],
+    'fetchBalance': [],
+
+    # Public endpoints
+    'fetchOHLCV': [],
+}
+
+EXCHANGE_HAS_OPTIONAL = [
+    # Private
+    'fetchMyTrades',  # Trades for order - fee detection
+    'createLimitOrder', 'createMarketOrder',  # Either OR for orders
+    # 'setLeverage',  # Margin/Futures trading
+    # 'setMarginMode',  # Margin/Futures trading
+    # 'fetchFundingHistory', # Futures trading
+    # Public
+    'fetchOrderBook', 'fetchL2OrderBook', 'fetchTicker',  # OR for pricing
+    'fetchTickers',  # For volumepairlist?
+    'fetchTrades',  # Downloading trades data
+    # 'fetchFundingRateHistory',  # Futures trading
+    # 'fetchPositions',  # Futures trading
+    # 'fetchLeverageTiers',  # Futures initialization
+    # 'fetchMarketLeverageTiers',  # Futures initialization
+    # 'fetchOpenOrder', 'fetchClosedOrder',  # replacement for fetchOrder
+    # 'fetchOpenOrders', 'fetchClosedOrders',  # 'fetchOrders',  # Refinding balance...
+]
+
+
+def remove_exchange_credentials(exchange_config: ExchangeConfig, dry_run: bool) -> None:
+    """
+    Removes exchange keys from the configuration and specifies dry-run
+    Used for backtesting / hyperopt / edge and utils.
+    Modifies the input dict!
+    """
+    if dry_run:
+        exchange_config['key'] = ''
+        exchange_config['apiKey'] = ''
+        exchange_config['secret'] = ''
+        exchange_config['password'] = ''
+        exchange_config['uid'] = ''
 
 
 def calculate_backoff(retrycount, max_retries):
@@ -103,48 +116,74 @@ def calculate_backoff(retrycount, max_retries):
 def retrier_async(f):
     async def wrapper(*args, **kwargs):
         count = kwargs.pop('count', API_RETRY_COUNT)
+        kucoin = args[0].name == "KuCoin"  # Check if the exchange is KuCoin.
         try:
             return await f(*args, **kwargs)
         except TemporaryError as ex:
-            logger.warning('%s() returned exception: "%s"', f.__name__, ex)
+            msg = f'{f.__name__}() returned exception: "{ex}". '
             if count > 0:
-                logger.warning('retrying %s() still for %s times', f.__name__, count)
+                msg += f'Retrying still for {count} times.'
                 count -= 1
-                kwargs.update({'count': count})
+                kwargs['count'] = count
                 if isinstance(ex, DDosProtection):
-                    backoff_delay = calculate_backoff(count + 1, API_RETRY_COUNT)
-                    logger.info(f"Applying DDosProtection backoff delay: {backoff_delay}")
-                    await asyncio.sleep(backoff_delay)
+                    if kucoin and "429000" in str(ex):
+                        # Temporary fix for 429000 error on kucoin
+                        # see https://github.com/freqtrade/freqtrade/issues/5700 for details.
+                        _get_logging_mixin().log_once(
+                            f"Kucoin 429 error, avoid triggering DDosProtection backoff delay. "
+                            f"{count} tries left before giving up", logmethod=logger.warning)
+                        # Reset msg to avoid logging too many times.
+                        msg = ''
+                    else:
+                        backoff_delay = calculate_backoff(count + 1, API_RETRY_COUNT)
+                        logger.info(f"Applying DDosProtection backoff delay: {backoff_delay}")
+                        await asyncio.sleep(backoff_delay)
+                if msg:
+                    logger.warning(msg)
                 return await wrapper(*args, **kwargs)
             else:
-                logger.warning('Giving up retrying: %s()', f.__name__)
+                logger.warning(msg + 'Giving up.')
                 raise ex
     return wrapper
 
 
-def retrier(_func=None, retries=API_RETRY_COUNT):
-    def decorator(f):
+F = TypeVar('F', bound=Callable[..., Any])
+
+
+# Type shenanigans
+@overload
+def retrier(_func: F) -> F:
+    ...
+
+
+@overload
+def retrier(*, retries=API_RETRY_COUNT) -> Callable[[F], F]:
+    ...
+
+
+def retrier(_func: Optional[F] = None, *, retries=API_RETRY_COUNT):
+    def decorator(f: F) -> F:
         @wraps(f)
         def wrapper(*args, **kwargs):
             count = kwargs.pop('count', retries)
             try:
                 return f(*args, **kwargs)
             except (TemporaryError, RetryableOrderError) as ex:
-                logger.warning('%s() returned exception: "%s"', f.__name__, ex)
+                msg = f'{f.__name__}() returned exception: "{ex}". '
                 if count > 0:
-                    logger.warning('retrying %s() still for %s times', f.__name__, count)
+                    logger.warning(msg + f'Retrying still for {count} times.')
                     count -= 1
                     kwargs.update({'count': count})
-                    if isinstance(ex, DDosProtection) or isinstance(ex, RetryableOrderError):
+                    if isinstance(ex, (DDosProtection, RetryableOrderError)):
                         # increasing backoff
                         backoff_delay = calculate_backoff(count + 1, retries)
                         logger.info(f"Applying DDosProtection backoff delay: {backoff_delay}")
                         time.sleep(backoff_delay)
                     return wrapper(*args, **kwargs)
                 else:
-                    logger.warning('Giving up retrying: %s()', f.__name__)
+                    logger.warning(msg + 'Giving up.')
                     raise ex
-        return wrapper
+        return cast(F, wrapper)
     # Support both @retrier and @retrier(retries=2) syntax
     if _func is None:
         return decorator

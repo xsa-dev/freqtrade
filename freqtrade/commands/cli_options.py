@@ -1,9 +1,11 @@
 """
 Definition of cli arguments used in arguments.py
 """
-from argparse import ArgumentTypeError
+from argparse import SUPPRESS, ArgumentTypeError
 
 from freqtrade import __version__, constants
+from freqtrade.constants import HYPEROPT_LOSS_BUILTIN
+from freqtrade.enums import CandleType
 
 
 def check_int_positive(value: str) -> int:
@@ -47,7 +49,7 @@ AVAILABLE_CLI_OPTIONS = {
         default=0,
     ),
     "logfile": Arg(
-        '--logfile',
+        '--logfile', '--log-file',
         help="Log to the file specified. Special values are: 'syslog', 'journald'. "
              "See the documentation for more details.",
         metavar='FILE',
@@ -67,7 +69,7 @@ AVAILABLE_CLI_OPTIONS = {
         metavar='PATH',
     ),
     "datadir": Arg(
-        '-d', '--datadir',
+        '-d', '--datadir', '--data-dir',
         help='Path to directory with historical backtesting data.',
         metavar='PATH',
     ),
@@ -79,6 +81,11 @@ AVAILABLE_CLI_OPTIONS = {
     "reset": Arg(
         '--reset',
         help='Reset sample files to their original state.',
+        action='store_true',
+    ),
+    "recursive_strategy_search": Arg(
+        '--recursive-strategy-search',
+        help='Recursively search for a strategy in the strategies folder.',
         action='store_true',
     ),
     # Main options
@@ -99,6 +106,11 @@ AVAILABLE_CLI_OPTIONS = {
         f'`{constants.DEFAULT_DB_DRYRUN_URL}` for Dry Run).',
         metavar='PATH',
     ),
+    "db_url_from": Arg(
+        '--db-url-from',
+        help='Source db url to use when migrating a database.',
+        metavar='PATH',
+    ),
     "sd_notify": Arg(
         '--sd-notify',
         help='Notify systemd service manager.',
@@ -109,10 +121,15 @@ AVAILABLE_CLI_OPTIONS = {
         help='Enforce dry-run for trading (removes Exchange secrets and simulates trades).',
         action='store_true',
     ),
+    "dry_run_wallet": Arg(
+        '--dry-run-wallet', '--starting-balance',
+        help='Starting balance, used for backtesting / hyperopt and dry-runs.',
+        type=float,
+    ),
     # Optimize common
     "timeframe": Arg(
-        '-i', '--timeframe', '--ticker-interval',
-        help='Specify ticker interval (`1m`, `5m`, `30m`, `1h`, `1d`).',
+        '-i', '--timeframe',
+        help='Specify timeframe (`1m`, `5m`, `30m`, `1h`, `1d`).',
     ),
     "timerange": Arg(
         '--timerange',
@@ -127,9 +144,12 @@ AVAILABLE_CLI_OPTIONS = {
     "stake_amount": Arg(
         '--stake-amount',
         help='Override the value of the `stake_amount` configuration setting.',
-        type=float,
     ),
     # Backtesting
+    "timeframe_detail": Arg(
+        '--timeframe-detail',
+        help='Specify detail timeframe for backtesting (`1m`, `5m`, `30m`, `1h`, `1d`).',
+    ),
     "position_stacking": Arg(
         '--eps', '--enable-position-stacking',
         help='Allow buying the same pair multiple times (position stacking).',
@@ -143,32 +163,64 @@ AVAILABLE_CLI_OPTIONS = {
         action='store_false',
         default=True,
     ),
+    "backtest_show_pair_list": Arg(
+        '--show-pair-list',
+        help='Show backtesting pairlist sorted by profit.',
+        action='store_true',
+        default=False,
+    ),
+    "enable_protections": Arg(
+        '--enable-protections', '--enableprotections',
+        help='Enable protections for backtesting.'
+        'Will slow backtesting down by a considerable amount, but will include '
+        'configured protections',
+        action='store_true',
+        default=False,
+    ),
     "strategy_list": Arg(
         '--strategy-list',
         help='Provide a space-separated list of strategies to backtest. '
-        'Please note that ticker-interval needs to be set either in config '
+        'Please note that timeframe needs to be set either in config '
         'or via command line. When using this together with `--export trades`, '
         'the strategy-name is injected into the filename '
-        '(so `backtest-data.json` becomes `backtest-data-DefaultStrategy.json`',
+        '(so `backtest-data.json` becomes `backtest-data-SampleStrategy.json`',
         nargs='+',
     ),
     "export": Arg(
         '--export',
-        help='Export backtest results, argument are: trades. '
-        'Example: `--export=trades`',
+        help='Export backtest results (default: trades).',
+        choices=constants.EXPORT_OPTIONS,
     ),
     "exportfilename": Arg(
-        '--export-filename',
-        help='Save backtest results to the file with this filename. '
-        'Requires `--export` to be set as well. '
-        'Example: `--export-filename=user_data/backtest_results/backtest_today.json`',
-        metavar='PATH',
+        "--export-filename",
+        "--backtest-filename",
+        help="Use this filename for backtest results."
+        "Requires `--export` to be set as well. "
+        "Example: `--export-filename=user_data/backtest_results/backtest_today.json`",
+        metavar="PATH",
+    ),
+    "disableparamexport": Arg(
+        '--disable-param-export',
+        help="Disable automatic hyperopt parameter export.",
+        action='store_true',
     ),
     "fee": Arg(
         '--fee',
         help='Specify fee ratio. Will be applied twice (on trade entry and exit).',
         type=float,
         metavar='FLOAT',
+    ),
+    "backtest_breakdown": Arg(
+        '--breakdown',
+        help='Show backtesting breakdown per [day, week, month].',
+        nargs='+',
+        choices=constants.BACKTEST_BREAKDOWNS
+    ),
+    "backtest_cache": Arg(
+        '--cache',
+        help='Load a cached backtest result no older than specified age (default: %(default)s).',
+        default=constants.BACKTEST_CACHE_DEFAULT,
+        choices=constants.BACKTEST_CACHE_AGE,
     ),
     # Edge
     "stoploss_range": Arg(
@@ -180,12 +232,13 @@ AVAILABLE_CLI_OPTIONS = {
     # Hyperopt
     "hyperopt": Arg(
         '--hyperopt',
-        help='Specify hyperopt class name which will be used by the bot.',
+        help=SUPPRESS,
         metavar='NAME',
+        required=False,
     ),
     "hyperopt_path": Arg(
         '--hyperopt-path',
-        help='Specify additional lookup path for Hyperopt and Hyperopt Loss functions.',
+        help='Specify additional lookup path for Hyperopt Loss functions.',
         metavar='PATH',
     ),
     "epochs": Arg(
@@ -198,10 +251,18 @@ AVAILABLE_CLI_OPTIONS = {
     "spaces": Arg(
         '--spaces',
         help='Specify which parameters to hyperopt. Space-separated list.',
-        choices=['all', 'buy', 'sell', 'roi', 'stoploss', 'trailing', 'default'],
+        choices=['all', 'buy', 'sell', 'roi', 'stoploss',
+                 'trailing', 'protection', 'trades', 'default'],
         nargs='+',
         default='default',
     ),
+    "analyze_per_epoch": Arg(
+        '--analyze-per-epoch',
+        help='Run populate_indicators once per epoch.',
+        action='store_true',
+        default=False,
+    ),
+
     "print_all": Arg(
         '--print-all',
         help='Print all results, not only the best ones.',
@@ -252,23 +313,19 @@ AVAILABLE_CLI_OPTIONS = {
         metavar='INT',
         default=1,
     ),
-    "hyperopt_continue": Arg(
-        "--continue",
-        help="Continue hyperopt from previous runs. "
-        "By default, temporary files will be removed and hyperopt will start from scratch.",
-        default=False,
-        action='store_true',
-    ),
     "hyperopt_loss": Arg(
-        '--hyperopt-loss',
+        '--hyperopt-loss', '--hyperoptloss',
         help='Specify the class name of the hyperopt loss function class (IHyperOptLoss). '
         'Different functions can generate completely different results, '
         'since the target for optimization is different. Built-in Hyperopt-loss-functions are: '
-        'DefaultHyperOptLoss, OnlyProfitHyperOptLoss, SharpeHyperOptLoss, SharpeHyperOptLossDaily, '
-        'SortinoHyperOptLoss, SortinoHyperOptLossDaily.'
-        '(default: `%(default)s`).',
+        f'{", ".join(HYPEROPT_LOSS_BUILTIN)}',
         metavar='NAME',
-        default=constants.DEFAULT_HYPEROPT_LOSS,
+    ),
+    "hyperoptexportfilename": Arg(
+        '--hyperopt-filename',
+        help='Hyperopt result filename.'
+        'Example: `--hyperopt-filename=hyperopt_results_2020-09-27_16-20-48.pickle`',
+        metavar='FILENAME',
     ),
     # List exchanges
     "print_one_column": Arg(
@@ -317,16 +374,28 @@ AVAILABLE_CLI_OPTIONS = {
         nargs='+',
         metavar='BASE_CURRENCY',
     ),
+    "trading_mode": Arg(
+        '--trading-mode', '--tradingmode',
+        help='Select Trading mode',
+        choices=constants.TRADING_MODES,
+    ),
+    "candle_types": Arg(
+        '--candle-types',
+        help='Select candle type to convert. Defaults to all available types.',
+        choices=[c.value for c in CandleType],
+        nargs='+',
+    ),
     # Script options
     "pairs": Arg(
         '-p', '--pairs',
-        help='Show profits for only these pairs. Pairs are space-separated.',
+        help='Limit command to these pairs. Pairs are space-separated.',
         nargs='+',
     ),
     # Download data
     "pairs_file": Arg(
         '--pairs-file',
-        help='File containing a list of pairs to download.',
+        help='File containing a list of pairs. '
+             'Takes precedence over --pairs or pairs configured in the configuration.',
         metavar='FILE',
     ),
     "days": Arg(
@@ -335,11 +404,28 @@ AVAILABLE_CLI_OPTIONS = {
         type=check_int_positive,
         metavar='INT',
     ),
+    "include_inactive": Arg(
+        '--include-inactive-pairs',
+        help='Also download data from inactive pairs.',
+        action='store_true',
+    ),
+    "new_pairs_days": Arg(
+        '--new-pairs-days',
+        help='Download data of new pairs for given number of days. Default: `%(default)s`.',
+        type=check_int_positive,
+        metavar='INT',
+    ),
     "download_trades": Arg(
         '--dl-trades',
         help='Download trades instead of OHLCV data. The bot will resample trades to the '
              'desired timeframe as specified as --timeframes/-t.',
         action='store_true',
+    ),
+    "format_from_trades": Arg(
+        '--format-from',
+        help='Source format for data conversion.',
+        choices=constants.AVAILABLE_DATAHANDLERS + ['kraken_csv'],
+        required=True,
     ),
     "format_from": Arg(
         '--format-from',
@@ -355,34 +441,50 @@ AVAILABLE_CLI_OPTIONS = {
     ),
     "dataformat_ohlcv": Arg(
         '--data-format-ohlcv',
-        help='Storage format for downloaded candle (OHLCV) data. (default: `%(default)s`).',
+        help='Storage format for downloaded candle (OHLCV) data. (default: `feather`).',
         choices=constants.AVAILABLE_DATAHANDLERS,
-        default='json'
     ),
     "dataformat_trades": Arg(
         '--data-format-trades',
-        help='Storage format for downloaded trades data. (default: `%(default)s`).',
+        help='Storage format for downloaded trades data. (default: `feather`).',
         choices=constants.AVAILABLE_DATAHANDLERS,
-        default='jsongz'
+    ),
+    "show_timerange": Arg(
+        '--show-timerange',
+        help='Show timerange available for available data. (May take a while to calculate).',
+        action='store_true',
     ),
     "exchange": Arg(
         '--exchange',
-        help=f'Exchange name (default: `{constants.DEFAULT_EXCHANGE}`). '
-        f'Only valid if no config is provided.',
+        help='Exchange name. Only valid if no config is provided.',
     ),
     "timeframes": Arg(
         '-t', '--timeframes',
         help='Specify which tickers to download. Space-separated list. '
         'Default: `1m 5m`.',
-        choices=['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h',
-                 '6h', '8h', '12h', '1d', '3d', '1w'],
-        default=['1m', '5m'],
         nargs='+',
+    ),
+    "prepend_data": Arg(
+        '--prepend',
+        help='Allow data prepending. (Data-appending is disabled)',
+        action='store_true',
     ),
     "erase": Arg(
         '--erase',
         help='Clean all existing data for the selected exchange/pairs/timeframes.',
         action='store_true',
+    ),
+    "erase_ui_only": Arg(
+        '--erase',
+        help="Clean UI folder, don't download new version.",
+        action='store_true',
+        default=False,
+    ),
+    "ui_version": Arg(
+        '--ui-version',
+        help=('Specify a specific version of FreqUI to install. '
+              'Not specifying this installs the latest version.'),
+        type=str,
     ),
     # Templating options
     "template": Arg(
@@ -412,6 +514,11 @@ AVAILABLE_CLI_OPTIONS = {
         type=check_int_positive,
         metavar='INT',
         default=750,
+    ),
+    "plot_auto_open": Arg(
+        '--auto-open',
+        help='Automatically open generated plot.',
+        action='store_true',
     ),
     "no_trades": Arg(
         '--no-trades',
@@ -516,5 +623,103 @@ AVAILABLE_CLI_OPTIONS = {
         '--no-header',
         help='Do not print epoch details header.',
         action='store_true',
+    ),
+    "hyperopt_ignore_missing_space": Arg(
+        "--ignore-missing-spaces", "--ignore-unparameterized-spaces",
+        help=("Suppress errors for any requested Hyperopt spaces "
+              "that do not contain any parameters."),
+        action="store_true",
+    ),
+    "analysis_groups": Arg(
+        "--analysis-groups",
+        help=("grouping output - "
+              "0: simple wins/losses by enter tag, "
+              "1: by enter_tag, "
+              "2: by enter_tag and exit_tag, "
+              "3: by pair and enter_tag, "
+              "4: by pair, enter_ and exit_tag (this can get quite large), "
+              "5: by exit_tag"),
+        nargs='+',
+        default=[],
+        choices=['0', '1', '2', '3', '4', '5'],
+    ),
+    "enter_reason_list": Arg(
+        "--enter-reason-list",
+        help=("Space separated list of entry signals to analyse. Default: all. "
+              "e.g. 'entry_tag_a entry_tag_b'"),
+        nargs='+',
+        default=['all'],
+    ),
+    "exit_reason_list": Arg(
+        "--exit-reason-list",
+        help=("Space separated list of exit signals to analyse. Default: all. "
+              "e.g. 'exit_tag_a roi stop_loss trailing_stop_loss'"),
+        nargs='+',
+        default=['all'],
+    ),
+    "indicator_list": Arg(
+        "--indicator-list",
+        help=("Space separated list of indicators to analyse. "
+              "e.g. 'close rsi bb_lowerband profit_abs'"),
+        nargs='+',
+        default=[],
+    ),
+    "analysis_rejected": Arg(
+        '--rejected-signals',
+        help='Analyse rejected signals',
+        action='store_true',
+    ),
+    "analysis_to_csv": Arg(
+        '--analysis-to-csv',
+        help='Save selected analysis tables to individual CSVs',
+        action='store_true',
+    ),
+    "analysis_csv_path": Arg(
+        '--analysis-csv-path',
+        help=("Specify a path to save the analysis CSVs "
+              "if --analysis-to-csv is enabled. Default: user_data/basktesting_results/"),
+    ),
+    "freqaimodel": Arg(
+        '--freqaimodel',
+        help='Specify a custom freqaimodels.',
+        metavar='NAME',
+    ),
+    "freqaimodel_path": Arg(
+        '--freqaimodel-path',
+        help='Specify additional lookup path for freqaimodels.',
+        metavar='PATH',
+    ),
+    "freqai_backtest_live_models": Arg(
+        '--freqai-backtest-live-models',
+        help='Run backtest with ready models.',
+        action='store_true'
+    ),
+    "minimum_trade_amount": Arg(
+        '--minimum-trade-amount',
+        help='Minimum trade amount for lookahead-analysis',
+        type=check_int_positive,
+        metavar='INT',
+    ),
+    "targeted_trade_amount": Arg(
+        '--targeted-trade-amount',
+        help='Targeted trade amount for lookahead analysis',
+        type=check_int_positive,
+        metavar='INT',
+    ),
+    "lookahead_analysis_exportfilename": Arg(
+        '--lookahead-analysis-exportfilename',
+        help="Use this csv-filename to store lookahead-analysis-results",
+        type=str
+    ),
+    "startup_candle": Arg(
+        '--startup-candle',
+        help='Specify startup candles to be checked (`199`, `499`, `999`, `1999`).',
+        nargs='+',
+    ),
+    "show_sensitive": Arg(
+        '--show-sensitive',
+        help='Show secrets in the output.',
+        action='store_true',
+        default=False,
     ),
 }

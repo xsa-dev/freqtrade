@@ -8,17 +8,17 @@ Issues labeled [good first issue](https://github.com/freqtrade/freqtrade/labels/
 
 Few pointers for contributions:
 
-- Create your PR against the `develop` branch, not `master`.
-- New features need to contain unit tests and must be PEP8 conformant (max-line-length = 100).
+- Create your PR against the `develop` branch, not `stable`.
+- New features need to contain unit tests, must conform to PEP8 (max-line-length = 100) and should be documented with the introduction PR.
+- PR's can be declared as `[WIP]` - which signify Work in Progress Pull Requests (which are not finished).
 
-If you are unsure, discuss the feature on our [Slack](https://join.slack.com/t/highfrequencybot/shared_invite/enQtNjU5ODcwNjI1MDU3LTU1MTgxMjkzNmYxNWE1MDEzYzQ3YmU4N2MwZjUyNjJjODRkMDVkNjg4YTAyZGYzYzlhOTZiMTE4ZjQ4YzM0OGE)
-or in a [issue](https://github.com/freqtrade/freqtrade/issues) before a PR.
+If you are unsure, discuss the feature on our [discord server](https://discord.gg/p7nuUNVfP7) or in a [issue](https://github.com/freqtrade/freqtrade/issues) before a Pull Request.
 
 ## Getting started
 
 Best start by reading the [documentation](https://www.freqtrade.io/) to get a feel for what is possible with the bot, or head straight to the [Developer-documentation](https://www.freqtrade.io/en/latest/developer/) (WIP) which should help you getting started.
 
-## Before sending the PR:
+## Before sending the PR
 
 ### 1. Run unit tests
 
@@ -45,16 +45,24 @@ pytest tests/test_<file_name>.py::test_<method_name>
 
 ### 2. Test if your code is PEP8 compliant
 
-#### Run Flake8
+#### Run Ruff
 
 ```bash
-flake8 freqtrade tests scripts
+ruff check .
 ```
 
-We receive a lot of code that fails the `flake8` checks.
+We receive a lot of code that fails the `ruff` checks.
 To help with that, we encourage you to install the git pre-commit 
-hook that will warn you when you try to commit code that fails these checks. 
-Guide for installing them is [here](http://flake8.pycqa.org/en/latest/user/using-hooks.html).
+hook that will warn you when you try to commit code that fails these checks.
+
+you can manually run pre-commit with `pre-commit run -a`.
+
+##### Additional styles applied
+
+* Have docstrings on all public methods
+* Use double-quotes for docstrings
+* Multiline docstrings should be indented to the level of the first quote
+* Doc-strings should follow the reST format (`:param xxx: ...`, `:return: ...`, `:raises KeyError: ... `)
 
 ### 3. Test if all type-hints are correct
 
@@ -62,6 +70,14 @@ Guide for installing them is [here](http://flake8.pycqa.org/en/latest/user/using
 
 ``` bash
 mypy freqtrade
+```
+
+### 4. Ensure all imports are correct
+
+#### Run isort
+
+``` bash
+isort .
 ```
 
 ## (Core)-Committer Guide
@@ -109,11 +125,11 @@ Exceptions:
 
 Contributors may be given commit privileges. Preference will be given to those with:
 
-1. Past contributions to Freqtrade and other related open-source projects. Contributions to Freqtrade include both code (both accepted and pending) and friendly participation in the issue tracker and Pull request reviews. Quantity and quality are considered.
+1. Past contributions to Freqtrade and other related open-source projects. Contributions to Freqtrade include both code (both accepted and pending) and friendly participation in the issue tracker and Pull request reviews. Both quantity and quality are considered.
 1. A coding style that the other core committers find simple, minimal, and clean.
 1. Access to resources for cross-platform development and testing.
 1. Time to devote to the project regularly.
 
-Being a Committer does not grant write permission on `develop` or `master` for security reasons (Users trust Freqtrade with their Exchange API keys).
+Being a Committer does not grant write permission on `develop` or `stable` for security reasons (Users trust Freqtrade with their Exchange API keys).
 
 After being Committer for some time, a Committer may be named Core Committer and given full repository access.

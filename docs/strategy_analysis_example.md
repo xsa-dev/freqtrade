@@ -2,42 +2,71 @@
 
 Debugging a strategy can be time-consuming. Freqtrade offers helper functions to visualize raw data.
 The following assumes you work with SampleStrategy, data for 5m timeframe from Binance and have downloaded them into the data directory in the default location.
+Please follow the [documentation](https://www.freqtrade.io/en/stable/data-download/) for more details.
 
 ## Setup
 
+### Change Working directory to repository root
+
 
 ```python
+import os
 from pathlib import Path
+
+# Change directory
+# Modify this cell to insure that the output shows the correct path.
+# Define all paths relative to the project root shown in the cell output
+project_root = "somedir/freqtrade"
+i=0
+try:
+    os.chdir(project_root)
+    assert Path('LICENSE').is_file()
+except:
+    while i<4 and (not Path('LICENSE').is_file()):
+        os.chdir(Path(Path.cwd(), '../'))
+        i+=1
+    project_root = Path.cwd()
+print(Path.cwd())
+```
+
+### Configure Freqtrade environment
+
+
+```python
 from freqtrade.configuration import Configuration
 
 # Customize these according to your needs.
 
 # Initialize empty configuration object
 config = Configuration.from_files([])
-# Optionally, use existing configuration file
-# config = Configuration.from_files(["config.json"])
+# Optionally (recommended), use existing configuration file
+# config = Configuration.from_files(["user_data/config.json"])
 
 # Define some constants
 config["timeframe"] = "5m"
 # Name of the strategy class
 config["strategy"] = "SampleStrategy"
 # Location of the data
-data_location = Path(config['user_data_dir'], 'data', 'binance')
+data_location = config["datadir"]
 # Pair to analyze - Only use one pair here
-pair = "BTC_USDT"
+pair = "BTC/USDT"
 ```
 
 
 ```python
 # Load data using values set above
 from freqtrade.data.history import load_pair_history
+from freqtrade.enums import CandleType
 
 candles = load_pair_history(datadir=data_location,
                             timeframe=config["timeframe"],
-                            pair=pair)
+                            pair=pair,
+                            data_format = "json",  # Make sure to update this to your data
+                            candle_type=CandleType.SPOT,
+                            )
 
 # Confirm success
-print("Loaded " + str(len(candles)) + f" rows of data for {pair} from {data_location}")
+print(f"Loaded {len(candles)} rows of data for {pair} from {data_location}")
 candles.head()
 ```
 
@@ -48,7 +77,10 @@ candles.head()
 ```python
 # Load strategy using values set above
 from freqtrade.resolvers import StrategyResolver
+from freqtrade.data.dataprovider import DataProvider
 strategy = StrategyResolver.load_strategy(config)
+strategy.dp = DataProvider(config, None, None)
+strategy.ft_bot_start()
 
 # Generate buy/sell signals using strategy
 df = strategy.analyze_ticker(candles, {'pair': pair})
@@ -69,7 +101,7 @@ df.tail()
 
 ```python
 # Report results
-print(f"Generated {df['buy'].sum()} buy signals")
+print(f"Generated {df['enter_long'].sum()} entry signals")
 data = df.set_index('date', drop=False)
 data.tail()
 ```
@@ -125,7 +157,33 @@ print(stats['strategy_comparison'])
 trades = load_backtest_data(backtest_dir)
 
 # Show value-counts per pair
-trades.groupby("pair")["sell_reason"].value_counts()
+trades.groupby("pair")["exit_reason"].value_counts()
+```
+
+## Plotting daily profit / equity line
+
+
+```python
+# Plotting equity line (starting with 0 on day 1 and adding daily profit for each backtested day)
+
+from freqtrade.configuration import Configuration
+from freqtrade.data.btanalysis import load_backtest_stats
+import plotly.express as px
+import pandas as pd
+
+# strategy = 'SampleStrategy'
+# config = Configuration.from_files(["user_data/config.json"])
+# backtest_dir = config["user_data_dir"] / "backtest_results"
+
+stats = load_backtest_stats(backtest_dir)
+strategy_stats = stats['strategy'][strategy]
+
+df = pd.DataFrame(columns=['dates','equity'], data=strategy_stats['daily_profit'])
+df['equity_daily'] = df['equity'].cumsum()
+
+fig = px.line(df, x="dates", y="equity_daily")
+fig.show()
+
 ```
 
 ### Load live trading results into a pandas dataframe
@@ -140,7 +198,7 @@ from freqtrade.data.btanalysis import load_trades_from_db
 trades = load_trades_from_db("sqlite:///tradesv3.sqlite")
 
 # Display results
-trades.groupby("pair")["sell_reason"].value_counts()
+trades.groupby("pair")["exit_reason"].value_counts()
 ```
 
 ## Analyze the loaded trades for trade parallelism
@@ -188,8 +246,22 @@ graph = generate_candlestick_graph(pair=pair,
 # Show graph inline
 # graph.show()
 
-# Render graph in a seperate window
+# Render graph in a separate window
 graph.show(renderer="browser")
+
+```
+
+## Plot average profit per trade as distribution graph
+
+
+```python
+import plotly.figure_factory as ff
+
+hist_data = [trades.profit_ratio]
+group_labels = ['profit_ratio']  # name of the dataset
+
+fig = ff.create_distplot(hist_data, group_labels, bin_size=0.01)
+fig.show()
 
 ```
 

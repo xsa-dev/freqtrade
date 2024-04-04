@@ -4,10 +4,8 @@ from unittest.mock import MagicMock
 import pytest
 import rapidjson
 
-from freqtrade.commands.build_config_commands import (ask_user_config,
-                                                      ask_user_overwrite,
-                                                      start_new_config,
-                                                      validate_is_float,
+from freqtrade.commands.build_config_commands import (ask_user_config, ask_user_overwrite,
+                                                      start_new_config, validate_is_float,
                                                       validate_is_int)
 from freqtrade.exceptions import OperationalException
 from tests.conftest import get_args, log_has_re
@@ -32,7 +30,7 @@ def test_validate_is_int():
     assert not validate_is_int('-ee')
 
 
-@pytest.mark.parametrize('exchange', ['bittrex', 'binance', 'kraken', 'ftx'])
+@pytest.mark.parametrize('exchange', ['bybit', 'binance', 'kraken'])
 def test_start_new_config(mocker, caplog, exchange):
     wt_mock = mocker.patch.object(Path, "write_text", MagicMock())
     mocker.patch.object(Path, "exists", MagicMock(return_value=True))
@@ -46,12 +44,18 @@ def test_start_new_config(mocker, caplog, exchange):
         'fiat_display_currency': 'EUR',
         'timeframe': '15m',
         'dry_run': True,
+        'trading_mode': 'spot',
+        'margin_mode': '',
         'exchange_name': exchange,
         'exchange_key': 'sampleKey',
         'exchange_secret': 'Samplesecret',
         'telegram': False,
         'telegram_token': 'asdf1244',
         'telegram_chat_id': '1144444',
+        'api_server': False,
+        'api_server_listen_addr': '127.0.0.1',
+        'api_server_username': 'freqtrader',
+        'api_server_password': 'MoneyMachine',
     }
     mocker.patch('freqtrade.commands.build_config_commands.ask_user_config',
                  return_value=sample_selections)

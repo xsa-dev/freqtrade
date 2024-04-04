@@ -2,13 +2,13 @@
 
 This page is intended for developers of Freqtrade, people who want to contribute to the Freqtrade codebase or documentation, or people who want to understand the source code of the application they're running.
 
-All contributions, bug reports, bug fixes, documentation improvements, enhancements and ideas are welcome. We [track issues](https://github.com/freqtrade/freqtrade/issues) on [GitHub](https://github.com) and also have a dev channel in [slack](https://join.slack.com/t/highfrequencybot/shared_invite/enQtNjU5ODcwNjI1MDU3LTU1MTgxMjkzNmYxNWE1MDEzYzQ3YmU4N2MwZjUyNjJjODRkMDVkNjg4YTAyZGYzYzlhOTZiMTE4ZjQ4YzM0OGE) where you can ask questions.
+All contributions, bug reports, bug fixes, documentation improvements, enhancements and ideas are welcome. We [track issues](https://github.com/freqtrade/freqtrade/issues) on [GitHub](https://github.com) and also have a dev channel on [discord](https://discord.gg/p7nuUNVfP7) where you can ask questions.
 
 ## Documentation
 
 Documentation is available at [https://freqtrade.io](https://www.freqtrade.io/) and needs to be provided with every new feature PR.
 
-Special fields for the documentation (like Note boxes, ...) can be found [here](https://squidfunk.github.io/mkdocs-material/extensions/admonition/).
+Special fields for the documentation (like Note boxes, ...) can be found [here](https://squidfunk.github.io/mkdocs-material/reference/admonitions/).
 
 To test the documentation locally use the following commands.
 
@@ -21,15 +21,40 @@ This will spin up a local server (usually on port 8000) so you can see if everyt
 
 ## Developer setup
 
-To configure a development environment, best use the `setup.sh` script and answer "y" when asked "Do you want to install dependencies for dev [y/N]? ".
-Alternatively (if your system is not supported by the setup.sh script), follow the manual installation process and run `pip3 install -e .[all]`.
+To configure a development environment, you can either use the provided [DevContainer](#devcontainer-setup), or use the `setup.sh` script and answer "y" when asked "Do you want to install dependencies for dev [y/N]? ".
+Alternatively (e.g. if your system is not supported by the setup.sh script), follow the manual installation process and run `pip3 install -e .[all]`.
 
-This will install all required tools for development, including `pytest`, `flake8`, `mypy`, and `coveralls`.
+This will install all required tools for development, including `pytest`, `ruff`, `mypy`, and `coveralls`.
+
+Then install the git hook scripts by running `pre-commit install`, so your changes will be verified locally before committing.
+This avoids a lot of waiting for CI already, as some basic formatting checks are done locally on your machine.
+
+Before opening a pull request, please familiarize yourself with our [Contributing Guidelines](https://github.com/freqtrade/freqtrade/blob/develop/CONTRIBUTING.md).
+
+### Devcontainer setup
+
+The fastest and easiest way to get started is to use [VSCode](https://code.visualstudio.com/) with the Remote container extension.
+This gives developers the ability to start the bot with all required dependencies *without* needing to install any freqtrade specific dependencies on your local machine.
+
+#### Devcontainer dependencies
+
+* [VSCode](https://code.visualstudio.com/)
+* [docker](https://docs.docker.com/install/)
+* [Remote container extension documentation](https://code.visualstudio.com/docs/remote)
+
+For more information about the [Remote container extension](https://code.visualstudio.com/docs/remote), best consult the documentation.
 
 ### Tests
 
 New code should be covered by basic unittests. Depending on the complexity of the feature, Reviewers may request more in-depth unittests.
 If necessary, the Freqtrade team can assist and give guidance with writing good tests (however please don't expect anyone to write the tests for you).
+
+#### How to run tests
+
+Use `pytest` in root folder to run all available testcases and confirm your local environment is setup correctly
+
+!!! Note "feature branches"
+    Tests are expected to pass on the `develop` and `stable` branches. Other branches may be work in progress with tests not working yet.
 
 #### Checking log content in tests
 
@@ -50,50 +75,48 @@ def test_method_to_test(caplog):
 
 ```
 
-### Local docker usage
+### Debug configuration
 
-The fastest and easiest way to start up is to use docker-compose.develop which gives developers the ability to start the bot up with all the required dependencies, *without* needing to install any freqtrade specific dependencies on your local machine.
+To debug freqtrade, we recommend VSCode (with the Python extension) with the following launch configuration (located in `.vscode/launch.json`).
+Details will obviously vary between setups - but this should work to get you started.
 
-#### Install
-
-* [git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git)
-* [docker](https://docs.docker.com/install/)
-* [docker-compose](https://docs.docker.com/compose/install/)
-
-#### Starting the bot
-
-##### Use the develop dockerfile
-
-``` bash
-rm docker-compose.yml && mv docker-compose.develop.yml docker-compose.yml
+``` json
+{
+    "name": "freqtrade trade",
+    "type": "python",
+    "request": "launch",
+    "module": "freqtrade",
+    "console": "integratedTerminal",
+    "args": [
+        "trade",
+        // Optional:
+        // "--userdir", "user_data",
+        "--strategy", 
+        "MyAwesomeStrategy",
+    ]
+},
 ```
 
-#### Docker Compose
+Command line arguments can be added in the `"args"` array.
+This method can also be used to debug a strategy, by setting the breakpoints within the strategy.
 
-##### Starting
+A similar setup can also be taken for Pycharm - using `freqtrade` as module name, and setting the command line arguments as "parameters".
 
-``` bash
-docker-compose up
-```
+??? Tip "Correct venv usage"
+    When using a virtual environment (which you should), make sure that your Editor is using the correct virtual environment to avoid problems or "unknown import" errors.
 
-![Docker compose up](https://user-images.githubusercontent.com/419355/65456322-47f63a80-de06-11e9-90c6-3c74d1bad0b8.png)
+    #### Vscode
 
-##### Rebuilding
+    You can select the correct environment in VSCode with the command "Python: Select Interpreter" - which will show you environments the extension detected.
+    If your environment has not been detected, you can also pick a path manually.
 
-``` bash
-docker-compose build
-```
+    #### Pycharm
 
-##### Executing (effectively SSH into the container)
+    In pycharm, you can select the appropriate Environment in the "Run/Debug Configurations" window.
+    ![Pycharm debug configuration](assets/pycharm_debug.png)
 
-The `exec` command requires that the container already be running, if you want to start it
-that can be effected by `docker-compose up` or `docker-compose run freqtrade_develop`
-
-``` bash
-docker-compose exec freqtrade_develop /bin/bash
-```
-
-![image](https://user-images.githubusercontent.com/419355/65456522-ba671a80-de06-11e9-9598-df9ca0d8dcac.png)
+!!! Note "Startup directory"
+    This assumes that you have the repository checked out, and the editor is started at the repository root level (so setup.py is at the top level of your repository).
 
 ## ErrorHandling
 
@@ -106,6 +129,8 @@ Below is an outline of exception inheritance hierarchy:
 + FreqtradeException
 |
 +---+ OperationalException
+|   |
+|   +---+ ConfigurationError
 |
 +---+ DependencyException
 |   |
@@ -120,13 +145,17 @@ Below is an outline of exception inheritance hierarchy:
 |       +---+ InvalidOrderException
 |           |
 |           +---+ RetryableOrderError
+|           |
+|           +---+ InsufficientFundsError
 |
 +---+ StrategyError
 ```
 
-## Modules
+---
 
-### Dynamic Pairlist
+## Plugins
+
+### Pairlists
 
 You have a great idea for a new pair selection algorithm you would like to try out? Great.
 Hopefully you also want to contribute this back upstream.
@@ -148,6 +177,9 @@ The base-class provides an instance of the exchange (`self._exchange`) the pairl
         self._pairlistconfig = pairlistconfig
         self._pairlist_pos = pairlist_pos
 ```
+
+!!! Tip
+    Don't forget to register your pairlist in `constants.py` under the variable `AVAILABLE_PAIRLISTS` - otherwise it will not be selectable.
 
 Now, let's step through the methods which require actions:
 
@@ -200,12 +232,100 @@ In `VolumePairList`, this implements different methods of sorting, does early va
         return pairs
 ```
 
+### Protections
+
+Best read the [Protection documentation](plugins.md#protections) to understand protections.
+This Guide is directed towards Developers who want to develop a new protection.
+
+No protection should use datetime directly, but use the provided `date_now` variable for date calculations. This preserves the ability to backtest protections.
+
+!!! Tip "Writing a new Protection"
+    Best copy one of the existing Protections to have a good example.
+    Don't forget to register your protection in `constants.py` under the variable `AVAILABLE_PROTECTIONS` - otherwise it will not be selectable.
+
+#### Implementation of a new protection
+
+All Protection implementations must have `IProtection` as parent class.
+For that reason, they must implement the following methods:
+
+* `short_desc()`
+* `global_stop()`
+* `stop_per_pair()`.
+
+`global_stop()` and `stop_per_pair()` must return a ProtectionReturn object, which consists of:
+
+* lock pair - boolean
+* lock until - datetime - until when should the pair be locked (will be rounded up to the next new candle)
+* reason - string, used for logging and storage in the database
+* lock_side - long, short or '*'.
+
+The `until` portion should be calculated using the provided `calculate_lock_end()` method.
+
+All Protections should use `"stop_duration"` / `"stop_duration_candles"` to define how long a a pair (or all pairs) should be locked.
+The content of this is made available as `self._stop_duration` to the each Protection.
+
+If your protection requires a look-back period, please use `"lookback_period"` / `"lockback_period_candles"` to keep all protections aligned.
+
+#### Global vs. local stops
+
+Protections can have 2 different ways to stop trading for a limited :
+
+* Per pair (local)
+* For all Pairs (globally)
+
+##### Protections - per pair
+
+Protections that implement the per pair approach must set `has_local_stop=True`.
+The method `stop_per_pair()` will be called whenever a trade closed (exit order completed).
+
+##### Protections - global protection
+
+These Protections should do their evaluation across all pairs, and consequently will also lock all pairs from trading (called a global PairLock).
+Global protection must set `has_global_stop=True` to be evaluated for global stops.
+The method `global_stop()` will be called whenever a trade closed (exit order completed).
+
+##### Protections - calculating lock end time
+
+Protections should calculate the lock end time based on the last trade it considers.
+This avoids re-locking should the lookback-period be longer than the actual lock period.
+
+The `IProtection` parent class provides a helper method for this in `calculate_lock_end()`.
+
+---
+
 ## Implement a new Exchange (WIP)
 
 !!! Note
     This section is a Work in Progress and is not a complete guide on how to test a new exchange with Freqtrade.
 
+!!! Note
+    Make sure to use an up-to-date version of CCXT before running any of the below tests.
+    You can get the latest version of ccxt by running `pip install -U ccxt` with activated virtual environment.
+    Native docker is not supported for these tests, however the available dev-container will support all required actions and eventually necessary changes.
+
 Most exchanges supported by CCXT should work out of the box.
+
+To quickly test the public endpoints of an exchange, add a configuration for your exchange to `test_ccxt_compat.py` and run these tests with `pytest --longrun tests/exchange/test_ccxt_compat.py`.
+Completing these tests successfully a good basis point (it's a requirement, actually), however these won't guarantee correct exchange functioning, as this only tests public endpoints, but no private endpoint (like generate order or similar).
+
+Also try to use `freqtrade download-data` for an extended timerange (multiple months) and verify that the data downloaded correctly (no holes, the specified timerange was actually downloaded).
+
+These are prerequisites to have an exchange listed as either Supported or Community tested (listed on the homepage).
+The below are "extras", which will make an exchange better (feature-complete) - but are not absolutely necessary for either of the 2 categories.
+
+Additional tests / steps to complete:
+
+* Verify data provided by `fetch_ohlcv()` - and eventually adjust `ohlcv_candle_limit` for this exchange
+* Check L2 orderbook limit range (API documentation) - and eventually set as necessary
+* Check if balance shows correctly (*)
+* Create market order (*)
+* Create limit order (*)
+* Cancel order (*)
+* Complete trade (enter + exit) (*)
+  * Compare result calculation between exchange and bot
+  * Ensure fees are applied correctly (check the database against the exchange)
+
+(*) Requires API keys and Balance on the exchange.
 
 ### Stoploss On Exchange
 
@@ -223,18 +343,18 @@ To check how the new exchange behaves, you can use the following snippet:
 
 ``` python
 import ccxt
-from datetime import datetime
+from datetime import datetime, timezone
 from freqtrade.data.converter import ohlcv_to_dataframe
-ct = ccxt.binance()
+ct = ccxt.binance()  # Use the exchange you're testing
 timeframe = "1d"
-pair = "XLM/BTC"  # Make sure to use a pair that exists on that exchange!
+pair = "BTC/USDT"  # Make sure to use a pair that exists on that exchange!
 raw = ct.fetch_ohlcv(pair, timeframe=timeframe)
 
 # convert to dataframe
 df1 = ohlcv_to_dataframe(raw, timeframe, pair=pair, drop_incomplete=False)
 
 print(df1.tail(1))
-print(datetime.utcnow())
+print(datetime.now(timezone.utc))
 ```
 
 ``` output
@@ -246,6 +366,32 @@ print(datetime.utcnow())
 The output will show the last entry from the Exchange as well as the current UTC date.
 If the day shows the same day, then the last candle can be assumed as incomplete and should be dropped (leave the setting `"ohlcv_partial_candle"` from the exchange-class untouched / True). Otherwise, set `"ohlcv_partial_candle"` to `False` to not drop Candles (shown in the example above).
 Another way is to run this command multiple times in a row and observe if the volume is changing (while the date remains the same).
+
+### Update binance cached leverage tiers
+
+Updating leveraged tiers should be done regularly - and requires an authenticated account with futures enabled.
+
+``` python
+import ccxt
+import json
+from pathlib import Path
+
+exchange = ccxt.binance({
+    'apiKey': '<apikey>',
+    'secret': '<secret>',
+    'options': {'defaultType': 'swap'}
+    })
+_ = exchange.load_markets()
+
+lev_tiers = exchange.fetch_leverage_tiers()
+
+# Assumes this is running in the root of the repository.
+file = Path('freqtrade/exchange/binance_leverage_tiers.json')
+json.dump(dict(sorted(lev_tiers.items())), file.open('w'), indent=2)
+
+```
+
+This file should then be contributed upstream, so others can benefit from this, too.
 
 ## Updating example notebooks
 
@@ -261,19 +407,22 @@ jupyter nbconvert --ClearOutputPreprocessor.enabled=True --to markdown freqtrade
 This documents some decisions taken for the CI Pipeline.
 
 * CI runs on all OS variants, Linux (ubuntu), macOS and Windows.
-* Docker images are build for the branches `master` and `develop`.
-* Raspberry PI Docker images are postfixed with `_pi` - so tags will be `:master_pi` and `develop_pi`.
+* Docker images are build for the branches `stable` and `develop`, and are built as multiarch builds, supporting multiple platforms via the same tag.
+* Docker images containing Plot dependencies are also available as `stable_plot` and `develop_plot`.
 * Docker images contain a file, `/freqtrade/freqtrade_commit` containing the commit this image is based of.
 * Full docker image rebuilds are run once a week via schedule.
 * Deployments run on ubuntu.
 * ta-lib binaries are contained in the build_helpers directory to avoid fails related to external unavailability.
-* All tests must pass for a PR to be merged to `master` or `develop`.
+* All tests must pass for a PR to be merged to `stable` or `develop`.
 
 ## Creating a release
 
 This part of the documentation is aimed at maintainers, and shows how to create a release.
 
 ### Create release branch
+
+!!! Note
+    Make sure that the `stable` branch is up-to-date!
 
 First, pick a commit that's about one week old (to not include latest additions to releases).
 
@@ -284,19 +433,17 @@ git checkout -b new_release <commitid>
 
 Determine if crucial bugfixes have been made between this commit and the current state, and eventually cherry-pick these.
 
-* Merge the release branch (master) into this branch.
+* Merge the release branch (stable) into this branch.
 * Edit `freqtrade/__init__.py` and add the version matching the current date (for example `2019.7` for July 2019). Minor versions can be `2019.7.1` should we need to do a second release that month. Version numbers must follow allowed versions from PEP0440 to avoid failures pushing to pypi.
-* Commit this part
-* push that branch to the remote and create a PR against the master branch
+* Commit this part.
+* Push that branch to the remote and create a PR against the **stable branch**.
+* Update develop version to next version following the pattern `2019.8-dev`.
 
 ### Create changelog from git commits
 
-!!! Note
-    Make sure that the master branch is up-to-date!
-
 ``` bash
 # Needs to be done before merging / pulling that branch.
-git log --oneline --no-decorate --no-merges master..new_release
+git log --oneline --no-decorate --no-merges stable..new_release
 ```
 
 To keep the release-log short, best wrap the full git changelog into a collapsible details section.
@@ -310,14 +457,25 @@ To keep the release-log short, best wrap the full git changelog into a collapsib
 </details>
 ```
 
+### FreqUI release
+
+If FreqUI has been updated substantially, make sure to create a release before merging the release branch.
+Make sure that freqUI CI on the release is finished and passed before merging the release.
+
 ### Create github release / tag
 
-Once the PR against master is merged (best right after merging):
+Once the PR against stable is merged (best right after merging):
 
 * Use the button "Draft a new release" in the Github UI (subsection releases).
 * Use the version-number specified as tag.
-* Use "master" as reference (this step comes after the above PR is merged).
-* Use the above changelog as release comment (as codeblock)
+* Use "stable" as reference (this step comes after the above PR is merged).
+* Use the above changelog as release comment (as codeblock).
+* Use the below snippet for the new release
+
+??? Tip "Release template"
+    ````
+    --8<-- "includes/release_template.md"
+    ````
 
 ## Releases
 

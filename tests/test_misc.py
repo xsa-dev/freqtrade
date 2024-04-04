@@ -1,43 +1,20 @@
 # pragma pylint: disable=missing-docstring,C0103
 
-import datetime
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
 
-from freqtrade.data.converter import ohlcv_to_dataframe
-from freqtrade.misc import (datesarray_to_datetimearray, file_dump_json,
-                            file_load_json, format_ms_time, pair_to_filename,
-                            plural, render_template,
-                            render_template_with_fallback, safe_value_fallback,
-                            safe_value_fallback2, shorten_date)
-
-
-def test_shorten_date() -> None:
-    str_data = '1 day, 2 hours, 3 minutes, 4 seconds ago'
-    str_shorten_data = '1 d, 2 h, 3 min, 4 sec ago'
-    assert shorten_date(str_data) == str_shorten_data
-
-
-def test_datesarray_to_datetimearray(ohlcv_history_list):
-    dataframes = ohlcv_to_dataframe(ohlcv_history_list, "5m", pair="UNITTEST/BTC",
-                                    fill_missing=True)
-    dates = datesarray_to_datetimearray(dataframes['date'])
-
-    assert isinstance(dates[0], datetime.datetime)
-    assert dates[0].year == 2017
-    assert dates[0].month == 11
-    assert dates[0].day == 26
-    assert dates[0].hour == 8
-    assert dates[0].minute == 50
-
-    date_len = len(dates)
-    assert date_len == 2
+from freqtrade.misc import (dataframe_to_json, deep_merge_dicts, file_dump_json, file_load_json,
+                            is_file_in_dir, json_to_dataframe, pair_to_filename,
+                            parse_db_uri_for_logging, plural, safe_value_fallback,
+                            safe_value_fallback2)
 
 
 def test_file_dump_json(mocker) -> None:
-    file_open = mocker.patch('freqtrade.misc.open', MagicMock())
+    file_open = mocker.patch('freqtrade.misc.Path.open', MagicMock())
     json_dump = mocker.patch('rapidjson.dump', MagicMock())
     file_dump_json(Path('somefile'), [1, 2, 3])
     assert file_open.call_count == 1
@@ -62,15 +39,39 @@ def test_file_load_json(mocker, testdatadir) -> None:
     assert ret
 
 
+def test_is_file_in_dir(tmp_path):
+
+    # Create a temporary directory and file
+    dir_path = tmp_path / "subdir"
+    dir_path.mkdir()
+    file_path = dir_path / "test.txt"
+    file_path.touch()
+
+    # Test that the function returns True when the file is in the directory
+    assert is_file_in_dir(file_path, dir_path) is True
+
+    # Test that the function returns False when the file is not in the directory
+    assert is_file_in_dir(file_path, tmp_path) is False
+
+    file_path2 = tmp_path / "../../test2.txt"
+    assert is_file_in_dir(file_path2, tmp_path) is False
+
+
 @pytest.mark.parametrize("pair,expected_result", [
     ("ETH/BTC", 'ETH_BTC'),
+    ("ETH/USDT", 'ETH_USDT'),
+    ("ETH/USDT:USDT", 'ETH_USDT_USDT'),  # swap with USDT as settlement currency
+    ("ETH/USD:USD", 'ETH_USD_USD'),  # swap with USD as settlement currency
+    ("AAVE/USD:USD", 'AAVE_USD_USD'),  # swap with USDT as settlement currency
+    ("ETH/USDT:USDT-210625", 'ETH_USDT_USDT-210625'),  # expiring futures
     ("Fabric Token/ETH", 'Fabric_Token_ETH'),
     ("ETHH20", 'ETHH20'),
     (".XBTBON2H", '_XBTBON2H'),
     ("ETHUSD.d", 'ETHUSD_d'),
-    ("ADA-0327", 'ADA_0327'),
-    ("BTC-USD-200110", 'BTC_USD_200110'),
-    ("F-AKRO/USDT", 'F_AKRO_USDT'),
+    ("ADA-0327", 'ADA-0327'),
+    ("BTC-USD-200110", 'BTC-USD-200110'),
+    ("BTC-PERP:USDT", 'BTC-PERP_USDT'),
+    ("F-AKRO/USDT", 'F-AKRO_USDT'),
     ("LC+/ETH", 'LC__ETH'),
     ("CMT@18/ETH", 'CMT_18_ETH'),
     ("LBTC:1022/SAI", 'LBTC_1022_SAI'),
@@ -80,19 +81,6 @@ def test_file_load_json(mocker, testdatadir) -> None:
 def test_pair_to_filename(pair, expected_result):
     pair_s = pair_to_filename(pair)
     assert pair_s == expected_result
-
-
-def test_format_ms_time() -> None:
-    # Date 2018-04-10 18:02:01
-    date_in_epoch_ms = 1523383321000
-    date = format_ms_time(date_in_epoch_ms)
-    assert type(date) is str
-    res = datetime.datetime(2018, 4, 10, 18, 2, 1, tzinfo=datetime.timezone.utc)
-    assert date == res.astimezone(None).strftime('%Y-%m-%dT%H:%M:%S')
-    res = datetime.datetime(2017, 12, 13, 8, 2, 1, tzinfo=datetime.timezone.utc)
-    # Date 2017-12-13 08:02:01
-    date_in_epoch_ms = 1513152121000
-    assert format_ms_time(date_in_epoch_ms) == res.astimezone(None).strftime('%Y-%m-%dT%H:%M:%S')
 
 
 def test_safe_value_fallback():
@@ -109,6 +97,8 @@ def test_safe_value_fallback():
 
     assert safe_value_fallback(dict1, 'keyNo', 'keyNo') is None
     assert safe_value_fallback(dict1, 'keyNo', 'keyNo', 55) == 55
+    assert safe_value_fallback(dict1, 'keyNo', default_value=55) == 55
+    assert safe_value_fallback(dict1, 'keyNo', None, default_value=55) == 55
 
 
 def test_safe_value_fallback2():
@@ -164,15 +154,46 @@ def test_plural() -> None:
     assert plural(-1.5, "ox", "oxen") == "oxen"
 
 
-def test_render_template_fallback(mocker):
-    from jinja2.exceptions import TemplateNotFound
-    with pytest.raises(TemplateNotFound):
-        val = render_template(
-            templatefile='subtemplates/indicators_does-not-exist.j2',)
+@pytest.mark.parametrize('conn_url,expected', [
+    ("postgresql+psycopg2://scott123:scott123@host:1245/dbname",
+     "postgresql+psycopg2://scott123:*****@host:1245/dbname"),
+    ("postgresql+psycopg2://scott123:scott123@host.name.com/dbname",
+     "postgresql+psycopg2://scott123:*****@host.name.com/dbname"),
+    ("mariadb+mariadbconnector://app_user:Password123!@127.0.0.1:3306/company",
+     "mariadb+mariadbconnector://app_user:*****@127.0.0.1:3306/company"),
+    ("mysql+pymysql://user:pass@some_mariadb/dbname?charset=utf8mb4",
+     "mysql+pymysql://user:*****@some_mariadb/dbname?charset=utf8mb4"),
+    ("sqlite:////freqtrade/user_data/tradesv3.sqlite",
+     "sqlite:////freqtrade/user_data/tradesv3.sqlite"),
+])
+def test_parse_db_uri_for_logging(conn_url, expected) -> None:
 
-    val = render_template_with_fallback(
-        templatefile='subtemplates/indicators_does-not-exist.j2',
-        templatefallbackfile='subtemplates/indicators_minimal.j2',
-    )
-    assert isinstance(val, str)
-    assert 'if self.dp' in val
+    assert parse_db_uri_for_logging(conn_url) == expected
+
+
+def test_deep_merge_dicts():
+    a = {'first': {'rows': {'pass': 'dog', 'number': '1', 'test': None}}}
+    b = {'first': {'rows': {'fail': 'cat', 'number': '5', 'test': 'asdf'}}}
+    res = {'first': {'rows': {'pass': 'dog', 'fail': 'cat', 'number': '5', 'test': 'asdf'}}}
+    res2 = {'first': {'rows': {'pass': 'dog', 'fail': 'cat', 'number': '1', 'test': None}}}
+    assert deep_merge_dicts(b, deepcopy(a)) == res
+
+    assert deep_merge_dicts(a, deepcopy(b)) == res2
+
+    res2['first']['rows']['test'] = 'asdf'
+    assert deep_merge_dicts(a, deepcopy(b), allow_null_overrides=False) == res2
+
+
+def test_dataframe_json(ohlcv_history):
+    from pandas.testing import assert_frame_equal
+    json = dataframe_to_json(ohlcv_history)
+    dataframe = json_to_dataframe(json)
+
+    assert list(ohlcv_history.columns) == list(dataframe.columns)
+    assert len(ohlcv_history) == len(dataframe)
+
+    assert_frame_equal(ohlcv_history, dataframe)
+    ohlcv_history.at[1, 'date'] = pd.NaT
+    json = dataframe_to_json(ohlcv_history)
+
+    dataframe = json_to_dataframe(json)

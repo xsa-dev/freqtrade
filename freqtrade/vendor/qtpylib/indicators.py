@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-#
 # QTPyLib: Quantitative Trading Python Library
 # https://github.com/ranaroussi/qtpylib
 #
@@ -20,17 +17,12 @@
 #
 
 import warnings
-import sys
 from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
 from pandas.core.base import PandasObject
 
-# =============================================
-# check min, python version
-if sys.version_info < (3, 4):
-    raise SystemError("QTPyLib requires Python version >= 3.4")
 
 # =============================================
 warnings.simplefilter(action="ignore", category=RuntimeWarning)
@@ -234,7 +226,7 @@ def crossed(series1, series2, direction=None):
             series1.shift(1) >= series2.shift(1)))
 
     if direction is None:
-        return above or below
+        return above | below
 
     return above if direction == "above" else below
 
@@ -338,11 +330,13 @@ def vwap(bars):
     (input can be pandas series or numpy array)
     bars are usually mid [ (h+l)/2 ] or typical [ (h+l+c)/3 ]
     """
-    typical = ((bars['high'] + bars['low'] + bars['close']) / 3).values
-    volume = bars['volume'].values
+    raise ValueError("using `qtpylib.vwap` facilitates lookahead bias. Please use "
+                     "`qtpylib.rolling_vwap` instead, which calculates vwap in a rolling manner.")
+    # typical = ((bars['high'] + bars['low'] + bars['close']) / 3).values
+    # volume = bars['volume'].values
 
-    return pd.Series(index=bars.index,
-                     data=np.cumsum(volume * typical) / np.cumsum(volume))
+    # return pd.Series(index=bars.index,
+    #                  data=np.cumsum(volume * typical) / np.cumsum(volume))
 
 
 # ---------------------------------------------

@@ -5,22 +5,21 @@ This module defines the interface to apply for hyperopt
 import logging
 import math
 from abc import ABC
-from typing import Any, Callable, Dict, List
+from typing import Dict, List, Union
 
-from skopt.space import Categorical, Dimension, Integer, Real
+from sklearn.base import RegressorMixin
+from skopt.space import Categorical, Dimension, Integer
 
-from freqtrade.exceptions import OperationalException
+from freqtrade.constants import Config
 from freqtrade.exchange import timeframe_to_minutes
 from freqtrade.misc import round_dict
+from freqtrade.optimize.space import SKDecimal
+from freqtrade.strategy import IStrategy
+
 
 logger = logging.getLogger(__name__)
 
-
-def _format_exception_message(method: str, space: str) -> str:
-    return (f"The '{space}' space is included into the hyperoptimization "
-            f"but {method}() method is not found in your "
-            f"custom Hyperopt class. You should either implement this "
-            f"method or remove the '{space}' space from hyperoptimization.")
+EstimatorType = Union[RegressorMixin, str]
 
 
 class IHyperOpt(ABC):
@@ -29,48 +28,26 @@ class IHyperOpt(ABC):
     Defines the mandatory structure must follow any custom hyperopt
 
     Class attributes you can use:
-        ticker_interval -> int: value of the ticker interval to use for the strategy
+        timeframe -> int: value of the timeframe to use for the strategy
     """
-    ticker_interval: str  # DEPRECATED
     timeframe: str
+    strategy: IStrategy
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: Config) -> None:
         self.config = config
 
-        # Assign ticker_interval to be used in hyperopt
-        IHyperOpt.ticker_interval = str(config['timeframe'])  # DEPRECATED
+        # Assign timeframe to be used in hyperopt
         IHyperOpt.timeframe = str(config['timeframe'])
 
-    @staticmethod
-    def buy_strategy_generator(params: Dict[str, Any]) -> Callable:
+    def generate_estimator(self, dimensions: List[Dimension], **kwargs) -> EstimatorType:
         """
-        Create a buy strategy generator.
+        Return base_estimator.
+        Can be any of "GP", "RF", "ET", "GBRT" or an instance of a class
+        inheriting from RegressorMixin (from sklearn).
         """
-        raise OperationalException(_format_exception_message('buy_strategy_generator', 'buy'))
+        return 'ET'
 
-    @staticmethod
-    def sell_strategy_generator(params: Dict[str, Any]) -> Callable:
-        """
-        Create a sell strategy generator.
-        """
-        raise OperationalException(_format_exception_message('sell_strategy_generator', 'sell'))
-
-    @staticmethod
-    def indicator_space() -> List[Dimension]:
-        """
-        Create an indicator space.
-        """
-        raise OperationalException(_format_exception_message('indicator_space', 'buy'))
-
-    @staticmethod
-    def sell_indicator_space() -> List[Dimension]:
-        """
-        Create a sell indicator space.
-        """
-        raise OperationalException(_format_exception_message('sell_indicator_space', 'sell'))
-
-    @staticmethod
-    def generate_roi_table(params: Dict) -> Dict[int, float]:
+    def generate_roi_table(self, params: Dict) -> Dict[int, float]:
         """
         Create a ROI table.
 
@@ -85,8 +62,7 @@ class IHyperOpt(ABC):
 
         return roi_table
 
-    @staticmethod
-    def roi_space() -> List[Dimension]:
+    def roi_space(self) -> List[Dimension]:
         """
         Create a ROI space.
 
@@ -94,7 +70,7 @@ class IHyperOpt(ABC):
 
         This method implements adaptive roi hyperspace with varied
         ranges for parameters which automatically adapts to the
-        ticker interval used.
+        timeframe used.
 
         It's used by Freqtrade by default, if no custom roi_space method is defined.
         """
@@ -106,7 +82,7 @@ class IHyperOpt(ABC):
         roi_t_alpha = 1.0
         roi_p_alpha = 1.0
 
-        timeframe_min = timeframe_to_minutes(IHyperOpt.ticker_interval)
+        timeframe_min = timeframe_to_minutes(self.timeframe)
 
         # We define here limits for the ROI space parameters automagically adapted to the
         # timeframe used by the bot:
@@ -116,7 +92,7 @@ class IHyperOpt(ABC):
         # * 'roi_p' (limits for the ROI value steps) components are scaled logarithmically.
         #
         # The scaling is designed so that it maps exactly to the legacy Freqtrade roi_space()
-        # method for the 5m ticker interval.
+        # method for the 5m timeframe.
         roi_t_scale = timeframe_min / 5
         roi_p_scale = math.log1p(timeframe_min) / math.log1p(5)
         roi_limits = {
@@ -142,7 +118,7 @@ class IHyperOpt(ABC):
             'roi_p2': roi_limits['roi_p2_min'],
             'roi_p3': roi_limits['roi_p3_min'],
         }
-        logger.info(f"Min roi table: {round_dict(IHyperOpt.generate_roi_table(p), 5)}")
+        logger.info(f"Min roi table: {round_dict(self.generate_roi_table(p), 3)}")
         p = {
             'roi_t1': roi_limits['roi_t1_max'],
             'roi_t2': roi_limits['roi_t2_max'],
@@ -151,19 +127,21 @@ class IHyperOpt(ABC):
             'roi_p2': roi_limits['roi_p2_max'],
             'roi_p3': roi_limits['roi_p3_max'],
         }
-        logger.info(f"Max roi table: {round_dict(IHyperOpt.generate_roi_table(p), 5)}")
+        logger.info(f"Max roi table: {round_dict(self.generate_roi_table(p), 3)}")
 
         return [
             Integer(roi_limits['roi_t1_min'], roi_limits['roi_t1_max'], name='roi_t1'),
             Integer(roi_limits['roi_t2_min'], roi_limits['roi_t2_max'], name='roi_t2'),
             Integer(roi_limits['roi_t3_min'], roi_limits['roi_t3_max'], name='roi_t3'),
-            Real(roi_limits['roi_p1_min'], roi_limits['roi_p1_max'], name='roi_p1'),
-            Real(roi_limits['roi_p2_min'], roi_limits['roi_p2_max'], name='roi_p2'),
-            Real(roi_limits['roi_p3_min'], roi_limits['roi_p3_max'], name='roi_p3'),
+            SKDecimal(roi_limits['roi_p1_min'], roi_limits['roi_p1_max'], decimals=3,
+                      name='roi_p1'),
+            SKDecimal(roi_limits['roi_p2_min'], roi_limits['roi_p2_max'], decimals=3,
+                      name='roi_p2'),
+            SKDecimal(roi_limits['roi_p3_min'], roi_limits['roi_p3_max'], decimals=3,
+                      name='roi_p3'),
         ]
 
-    @staticmethod
-    def stoploss_space() -> List[Dimension]:
+    def stoploss_space(self) -> List[Dimension]:
         """
         Create a stoploss space.
 
@@ -171,11 +149,10 @@ class IHyperOpt(ABC):
         You may override it in your custom Hyperopt class.
         """
         return [
-            Real(-0.35, -0.02, name='stoploss'),
+            SKDecimal(-0.35, -0.02, decimals=3, name='stoploss'),
         ]
 
-    @staticmethod
-    def generate_trailing_params(params: Dict) -> Dict:
+    def generate_trailing_params(self, params: Dict) -> Dict:
         """
         Create dict with trailing stop parameters.
         """
@@ -187,8 +164,7 @@ class IHyperOpt(ABC):
             'trailing_only_offset_is_reached': params['trailing_only_offset_is_reached'],
         }
 
-    @staticmethod
-    def trailing_space() -> List[Dimension]:
+    def trailing_space(self) -> List[Dimension]:
         """
         Create a trailing stoploss space.
 
@@ -203,19 +179,29 @@ class IHyperOpt(ABC):
             # other 'trailing' hyperspace parameters.
             Categorical([True], name='trailing_stop'),
 
-            Real(0.01, 0.35, name='trailing_stop_positive'),
+            SKDecimal(0.01, 0.35, decimals=3, name='trailing_stop_positive'),
 
             # 'trailing_stop_positive_offset' should be greater than 'trailing_stop_positive',
             # so this intermediate parameter is used as the value of the difference between
             # them. The value of the 'trailing_stop_positive_offset' is constructed in the
             # generate_trailing_params() method.
             # This is similar to the hyperspace dimensions used for constructing the ROI tables.
-            Real(0.001, 0.1, name='trailing_stop_positive_offset_p1'),
+            SKDecimal(0.001, 0.1, decimals=3, name='trailing_stop_positive_offset_p1'),
 
             Categorical([True, False], name='trailing_only_offset_is_reached'),
         ]
 
-    # This is needed for proper unpickling the class attribute ticker_interval
+    def max_open_trades_space(self) -> List[Dimension]:
+        """
+        Create a max open trades space.
+
+        You may override it in your custom Hyperopt class.
+        """
+        return [
+            Integer(-1, 10, name='max_open_trades'),
+        ]
+
+    # This is needed for proper unpickling the class attribute timeframe
     # which is set to the actual value by the resolver.
     # Why do I still need such shamanic mantras in modern python?
     def __getstate__(self):
@@ -225,5 +211,4 @@ class IHyperOpt(ABC):
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        IHyperOpt.ticker_interval = state['timeframe']
         IHyperOpt.timeframe = state['timeframe']

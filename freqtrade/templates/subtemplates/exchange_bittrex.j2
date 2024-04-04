@@ -1,7 +1,7 @@
 "order_types": {
-    "buy": "limit",
-    "sell": "limit",
-    "emergencysell": "limit",
+    "entry": "limit",
+    "exit": "limit",
+    "emergency_exit": "limit",
     "stoploss": "limit",
     "stoploss_on_exchange": false
 },
@@ -9,22 +9,9 @@
     "name": "{{ exchange_name | lower }}",
     "key": "{{ exchange_key }}",
     "secret": "{{ exchange_secret }}",
-    "ccxt_config": {"enableRateLimit": true},
-    "ccxt_async_config": {
-        "enableRateLimit": true,
-        "rateLimit": 500
-    },
+    "ccxt_config": {},
+    "ccxt_async_config": {},
     "pair_whitelist": [
-        "ETH/BTC",
-        "LTC/BTC",
-        "ETC/BTC",
-        "DASH/BTC",
-        "ZEC/BTC",
-        "XLM/BTC",
-        "XRP/BTC",
-        "TRX/BTC",
-        "ADA/BTC",
-        "XMR/BTC"
     ],
     "pair_blacklist": [
     ]

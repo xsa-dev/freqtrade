@@ -4,63 +4,35 @@ e.g BTC to USD
 """
 
 import logging
-import time
+from datetime import datetime
 from typing import Dict, List
 
+from cachetools import TTLCache
 from pycoingecko import CoinGeckoAPI
+from requests.exceptions import RequestException
 
 from freqtrade.constants import SUPPORTED_FIAT
+from freqtrade.mixins.logging_mixin import LoggingMixin
 
 
 logger = logging.getLogger(__name__)
 
 
-class CryptoFiat:
-    """
-    Object to describe what is the price of Crypto-currency in a FIAT
-    """
-    # Constants
-    CACHE_DURATION = 6 * 60 * 60  # 6 hours
-
-    def __init__(self, crypto_symbol: str, fiat_symbol: str, price: float) -> None:
-        """
-        Create an object that will contains the price for a crypto-currency in fiat
-        :param crypto_symbol: Crypto-currency you want to convert (e.g BTC)
-        :param fiat_symbol: FIAT currency you want to convert to (e.g USD)
-        :param price: Price in FIAT
-        """
-
-        # Public attributes
-        self.crypto_symbol = None
-        self.fiat_symbol = None
-        self.price = 0.0
-
-        # Private attributes
-        self._expiration = 0.0
-
-        self.crypto_symbol = crypto_symbol.lower()
-        self.fiat_symbol = fiat_symbol.lower()
-        self.set_price(price=price)
-
-    def set_price(self, price: float) -> None:
-        """
-        Set the price of the Crypto-currency in FIAT and set the expiration time
-        :param price: Price of the current Crypto currency in the fiat
-        :return: None
-        """
-        self.price = price
-        self._expiration = time.time() + self.CACHE_DURATION
-
-    def is_expired(self) -> bool:
-        """
-        Return if the current price is still valid or needs to be refreshed
-        :return: bool, true the price is expired and needs to be refreshed, false the price is
-         still valid
-        """
-        return self._expiration - time.time() <= 0
+# Manually map symbol to ID for some common coins
+# with duplicate coingecko entries
+coingecko_mapping = {
+    'eth': 'ethereum',
+    'bnb': 'binancecoin',
+    'sol': 'solana',
+    'usdt': 'tether',
+    'busd': 'binance-usd',
+    'tusd': 'true-usd',
+    'usdc': 'usd-coin',
+    'btc': 'bitcoin'
+}
 
 
-class CryptoToFiatConverter:
+class CryptoToFiatConverter(LoggingMixin):
     """
     Main class to initiate Crypto to FIAT.
     This object contains a list of pair Crypto, FIAT
@@ -68,8 +40,8 @@ class CryptoToFiatConverter:
     """
     __instance = None
     _coingekko: CoinGeckoAPI = None
-
-    _cryptomap: Dict = {}
+    _coinlistings: List[Dict] = []
+    _backoff: float = 0.0
 
     def __new__(cls):
         """
@@ -78,23 +50,61 @@ class CryptoToFiatConverter:
         if CryptoToFiatConverter.__instance is None:
             CryptoToFiatConverter.__instance = object.__new__(cls)
             try:
-                CryptoToFiatConverter._coingekko = CoinGeckoAPI()
+                # Limit retires to 1 (0 and 1)
+                # otherwise we risk bot impact if coingecko is down.
+                CryptoToFiatConverter._coingekko = CoinGeckoAPI(retries=1)
             except BaseException:
                 CryptoToFiatConverter._coingekko = None
         return CryptoToFiatConverter.__instance
 
     def __init__(self) -> None:
-        self._pairs: List[CryptoFiat] = []
+        # Timeout: 6h
+        self._pair_price: TTLCache = TTLCache(maxsize=500, ttl=6 * 60 * 60)
+
+        LoggingMixin.__init__(self, logger, 3600)
         self._load_cryptomap()
 
     def _load_cryptomap(self) -> None:
         try:
-            coinlistings = self._coingekko.get_coins_list()
-            # Create mapping table from synbol to coingekko_id
-            self._cryptomap = {x['symbol']: x['id'] for x in coinlistings}
+            # Use list-comprehension to ensure we get a list.
+            self._coinlistings = [x for x in self._coingekko.get_coins_list()]
+        except RequestException as request_exception:
+            if "429" in str(request_exception):
+                logger.warning(
+                    "Too many requests for CoinGecko API, backing off and trying again later.")
+                # Set backoff timestamp to 60 seconds in the future
+                self._backoff = datetime.now().timestamp() + 60
+                return
+            # If the request is not a 429 error we want to raise the normal error
+            logger.error(
+                "Could not load FIAT Cryptocurrency map for the following problem: "
+                f"{request_exception}"
+            )
         except (Exception) as exception:
             logger.error(
                 f"Could not load FIAT Cryptocurrency map for the following problem: {exception}")
+
+    def _get_gekko_id(self, crypto_symbol):
+        if not self._coinlistings:
+            if self._backoff <= datetime.now().timestamp():
+                self._load_cryptomap()
+                # Still not loaded.
+                if not self._coinlistings:
+                    return None
+            else:
+                return None
+        found = [x for x in self._coinlistings if x['symbol'].lower() == crypto_symbol]
+
+        if crypto_symbol in coingecko_mapping.keys():
+            found = [x for x in self._coinlistings if x['id'] == coingecko_mapping[crypto_symbol]]
+
+        if len(found) == 1:
+            return found[0]['id']
+
+        if len(found) > 0:
+            # Wrong!
+            logger.warning(f"Found multiple mappings in CoinGecko for {crypto_symbol}.")
+            return None
 
     def convert_amount(self, crypto_amount: float, crypto_symbol: str, fiat_symbol: str) -> float:
         """
@@ -118,49 +128,31 @@ class CryptoToFiatConverter:
         """
         crypto_symbol = crypto_symbol.lower()
         fiat_symbol = fiat_symbol.lower()
+        inverse = False
 
-        # Check if the fiat convertion you want is supported
+        if crypto_symbol == 'usd':
+            # usd corresponds to "uniswap-state-dollar" for coingecko.
+            # We'll therefore need to "swap" the currencies
+            logger.info(f"reversing Rates {crypto_symbol}, {fiat_symbol}")
+            crypto_symbol = fiat_symbol
+            fiat_symbol = 'usd'
+            inverse = True
+
+        symbol = f"{crypto_symbol}/{fiat_symbol}"
+        # Check if the fiat conversion you want is supported
         if not self._is_supported_fiat(fiat=fiat_symbol):
             raise ValueError(f'The fiat {fiat_symbol} is not supported.')
 
-        # Get the pair that interest us and return the price in fiat
-        for pair in self._pairs:
-            if pair.crypto_symbol == crypto_symbol and pair.fiat_symbol == fiat_symbol:
-                # If the price is expired we refresh it, avoid to call the API all the time
-                if pair.is_expired():
-                    pair.set_price(
-                        price=self._find_price(
-                            crypto_symbol=pair.crypto_symbol,
-                            fiat_symbol=pair.fiat_symbol
-                        )
-                    )
+        price = self._pair_price.get(symbol, None)
 
-                # return the last price we have for this pair
-                return pair.price
-
-        # The pair does not exist, so we create it and return the price
-        return self._add_pair(
-            crypto_symbol=crypto_symbol,
-            fiat_symbol=fiat_symbol,
-            price=self._find_price(
+        if not price:
+            price = self._find_price(
                 crypto_symbol=crypto_symbol,
                 fiat_symbol=fiat_symbol
             )
-        )
-
-    def _add_pair(self, crypto_symbol: str, fiat_symbol: str, price: float) -> float:
-        """
-        :param crypto_symbol: Crypto-currency you want to convert (e.g BTC)
-        :param fiat_symbol: FIAT currency you want to convert to (e.g USD)
-        :return: price in FIAT
-        """
-        self._pairs.append(
-            CryptoFiat(
-                crypto_symbol=crypto_symbol,
-                fiat_symbol=fiat_symbol,
-                price=price
-            )
-        )
+            if inverse and price != 0.0:
+                price = 1 / price
+            self._pair_price[symbol] = price
 
         return price
 
@@ -175,12 +167,12 @@ class CryptoToFiatConverter:
 
     def _find_price(self, crypto_symbol: str, fiat_symbol: str) -> float:
         """
-        Call CoinGekko API to retrieve the price in the FIAT
+        Call CoinGecko API to retrieve the price in the FIAT
         :param crypto_symbol: Crypto-currency you want to convert (e.g btc)
         :param fiat_symbol: FIAT currency you want to convert to (e.g usd)
         :return: float, price of the crypto-currency in Fiat
         """
-        # Check if the fiat convertion you want is supported
+        # Check if the fiat conversion you want is supported
         if not self._is_supported_fiat(fiat=fiat_symbol):
             raise ValueError(f'The fiat {fiat_symbol} is not supported.')
 
@@ -188,13 +180,16 @@ class CryptoToFiatConverter:
         if crypto_symbol == fiat_symbol:
             return 1.0
 
-        if crypto_symbol not in self._cryptomap:
+        _gekko_id = self._get_gekko_id(crypto_symbol)
+
+        if not _gekko_id:
             # return 0 for unsupported stake currencies (fiat-convert should not break the bot)
-            logger.warning("unsupported crypto-symbol %s - returning 0.0", crypto_symbol)
+            self.log_once(
+                f"unsupported crypto-symbol {crypto_symbol.upper()} - returning 0.0",
+                logger.warning)
             return 0.0
 
         try:
-            _gekko_id = self._cryptomap[crypto_symbol]
             return float(
                 self._coingekko.get_price(
                     ids=_gekko_id,
