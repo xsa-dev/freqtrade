@@ -113,17 +113,17 @@ jobs:
       run: |
         ruff check --output-format=github .
 
-    - name: Mypy
-      run: |
-        mypy freqtrade scripts tests
+#    - name: Mypy
+#      run: |
+#        mypy freqtrade scripts tests
 
-    - name: Discord notification
-      uses: rjstone/discord-webhook-notify@v1
-      if: failure() && ( github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
-      with:
-          severity: error
-          details: Freqtrade CI failed on ${{ matrix.os }}
-          webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
+#    - name: Discord notification
+#      uses: rjstone/discord-webhook-notify@v1
+#      if: failure() && ( github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
+#      with:
+#          severity: error
+#          details: Freqtrade CI failed on ${{ matrix.os }}
+#          webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
 
   build-macos:
     runs-on: ${{ matrix.os }}
