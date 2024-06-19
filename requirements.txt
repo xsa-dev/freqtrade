@@ -66,3 +66,6 @@ janus==1.0.0
 
 ast-comments==1.2.1
 packaging==23.2
+certifi>=2023.7.22 # not directly required, pinned by Snyk to avoid a vulnerability
+idna>=3.7 # not directly required, pinned by Snyk to avoid a vulnerability
+setuptools>=65.5.1 # not directly required, pinned by Snyk to avoid a vulnerability
