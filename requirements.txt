@@ -30,7 +30,7 @@ rich==13.7.0
 pyarrow==14.0.2; platform_machine != 'armv7l'
 
 # find first, C search in arrays
-py_find_1st==1.1.6
+py_find_1st==1.1.7
 
 # Load ticker files 30% faster
 python-rapidjson==1.14
