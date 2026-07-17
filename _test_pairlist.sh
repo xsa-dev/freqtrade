@@ -1,0 +1,2 @@
+#
+freqtrade test-pairlist

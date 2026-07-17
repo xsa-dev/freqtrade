@@ -1,0 +1,1 @@
+freqtrade trade -s BbandRsi -c user_data/config.json --logfile user_data/logs/BTC_BbandRsi.log
